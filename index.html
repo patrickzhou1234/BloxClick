@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width">
+    <title>Block Battle Arena</title>
+    <link href="https://cdn.muicss.com/mui-0.10.3/css/mui.min.css" rel="stylesheet" type="text/css" />
+    <link href="style.css" rel="stylesheet" type="text/css" />
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="babylon.js"></script>
+    <script src="babylonjs.loaders.min.js"></script>
+    <script src="ammo.js"></script>
+  </head>
+  <body>
+    <!-- Loading Screen -->
+    <div id="loadingScreen">
+      <div class="loading-content">
+        <div class="spinner"></div>
+        <p>Loading...</p>
+      </div>
+    </div>
+    <div id="menuselections" class="mui-panel">
+      <div class="mui-form--inline">
+        <div class="menu-item">
+          <input name="colorpicker" id="colorpicker" type="color" value="#FF0000">
+          <label for="colorpicker">Color</label>
+        </div>
+        
+        <div class="menu-item">
+          <div class="mui-checkbox">
+            <label>
+              <input id="frontfacingvis" type="checkbox" name="frontfacingvis" checked>
+              Show Spawn
+            </label>
+          </div>
+        </div>
+        
+        <div class="menu-item">
+          <div class="mui-select">
+            <select id="meshtype" name="meshtype">
+              <option value="box">Box</option>
+              <option value="sphere">Sphere</option>
+              <option value="cylinder">Cylinder</option>
+              <option value="capsule">Capsule</option>
+            </select>
+            <label>Mesh Type</label>
+          </div>
+        </div>
+        
+        <div class="menu-item">
+          <div class="mui-checkbox">
+            <label>
+              <input id="slimyToggle" type="checkbox" name="slimyToggle">
+              Slimy
+            </label>
+          </div>
+        </div>
+        
+        <div class="menu-item slider-item">
+          <label for="sizeToggle">Size</label>
+          <input id="sizeToggle" type="range" min="0" max="100" value="50">
+        </div>
+        
+        <div class="menu-item">
+          <button id="clearBtn" class="mui-btn mui-btn--danger mui-btn--small">Clear All</button>
+        </div>
+        
+        <div class="menu-item">
+          <a href="/admin.html" target="_blank" class="mui-btn mui-btn--primary mui-btn--small">Admin</a>
+        </div>
+      </div>
+    </div>
+    <button id="menureveal" class="mui-btn mui-btn--accent">⇧</button>
+    <canvas id="babcanv"></canvas>
+    <script src="https://cdn.muicss.com/mui-0.10.3/js/mui.min.js"></script>
+    <script src="script.js"></script>
+  </body>
+</html>
