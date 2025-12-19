@@ -507,19 +507,38 @@ function handleMovement() {
     right.y = 0;
     right.normalize();
     
-    const impulseStrength = 0.08;
-    
+    const moveSpeed = 3;
+    let moveDirection = new BABYLON.Vector3(0, 0, 0);
+    let hasInput = false;
+
     if (keysPressed['KeyW'] || keysPressed['ArrowUp']) {
-        playerPhysicsBody.physicsImpostor.applyImpulse(forward.scale(impulseStrength), playerPhysicsBody.getAbsolutePosition());
+        moveDirection.addInPlace(forward);
+        hasInput = true;
     }
     if (keysPressed['KeyS'] || keysPressed['ArrowDown']) {
-        playerPhysicsBody.physicsImpostor.applyImpulse(forward.scale(-impulseStrength), playerPhysicsBody.getAbsolutePosition());
+        moveDirection.subtractInPlace(forward);
+        hasInput = true;
     }
     if (keysPressed['KeyA'] || keysPressed['ArrowLeft']) {
-        playerPhysicsBody.physicsImpostor.applyImpulse(right.scale(-impulseStrength), playerPhysicsBody.getAbsolutePosition());
+        moveDirection.subtractInPlace(right);
+        hasInput = true;
     }
     if (keysPressed['KeyD'] || keysPressed['ArrowRight']) {
-        playerPhysicsBody.physicsImpostor.applyImpulse(right.scale(impulseStrength), playerPhysicsBody.getAbsolutePosition());
+        moveDirection.addInPlace(right);
+        hasInput = true;
+    }
+
+    if (hasInput) {
+        moveDirection.normalize();
+        const currentVel = playerPhysicsBody.physicsImpostor.getLinearVelocity();
+        // Apply velocity directly for instant response, preserving Y (gravity)
+        playerPhysicsBody.physicsImpostor.setLinearVelocity(
+            new BABYLON.Vector3(
+                moveDirection.x * moveSpeed,
+                currentVel.y,
+                moveDirection.z * moveSpeed
+            )
+        );
     }
     
     // Brake/crouch - only works when grounded
