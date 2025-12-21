@@ -327,6 +327,7 @@ let isThirdPerson = false;
 // Last hit tracking
 let lastHitterId = null;
 let lastHitterTime = 0;
+let lastHitCause = null; // Track what caused the last hit
 
 // Death/respawn state
 let isDead = false;
@@ -347,9 +348,9 @@ let batMesh = null;
 let isSwingingBat = false;
 let canSwingBat = true;
 const BAT_COOLDOWN = 1500; // 1.5 seconds
-const BAT_SWING_DURATION = 600; // ms - slower swing
-const BAT_KNOCKBACK_FORCE = 50;
-const BAT_RANGE = 0.5;
+const BAT_SWING_DURATION = 300; // ms - slower swing
+const BAT_KNOCKBACK_FORCE = 20; // MASSIVE knockback
+const BAT_RANGE = 3.0; // Extended range for long bat
 
 // Grenade state
 let isChargingGrenade = false;
@@ -581,14 +582,16 @@ var createScene = function () {
     player = createCharacterMesh(scene, "player", new BABYLON.Color3(0.2, 0.6, 1), myUsername);
     player.position.y = 3;
 
-    // Create bat (initially invisible)
-    batMesh = BABYLON.MeshBuilder.CreateCapsule("bat", {height: 2, radius: 0.15}, scene);
+    // Create bat attached to player's right arm
+    batMesh = BABYLON.MeshBuilder.CreateCapsule("bat", {height: 3.0, radius: 0.08}, scene);
     const batMat = new BABYLON.StandardMaterial("batMat", scene);
     batMat.diffuseColor = new BABYLON.Color3(0.4, 0.2, 0.1); // Brown
     batMat.emissiveColor = new BABYLON.Color3(0.1, 0.05, 0.025);
     batMesh.material = batMat;
-    batMesh.visibility = 0;
-    batMesh.position.y = 3;
+    batMesh.parent = player.rightArm; // Attach to right arm
+    batMesh.position.set(0, -1.5, 0); // Position at end of arm
+    batMesh.rotation.set(0, 0, 0);
+    batMesh.visibility = 0; // Hidden until swing
 
     frontfacing = BABYLON.Mesh.CreateBox("front", 1, scene);
     frontfacing.visibility = 0.5;
@@ -609,7 +612,7 @@ var createScene = function () {
             
             if (Date.now() - lastHitterTime < 5000) { // If hit in last 5 seconds
                 killerId = lastHitterId;
-                cause = "Knocked into Void";
+                cause = lastHitCause || "Knocked into Void";
             }
             
             window.triggerDeath(killerId, cause);
@@ -1001,38 +1004,25 @@ var createScene = function () {
         // Show bat
         batMesh.visibility = 1;
         
-        // Animate swing - slower with more frames
+        // Store original arm rotation
+        const originalArmRotX = player.rightArm.rotation.x;
+        const originalArmRotZ = player.rightArm.rotation.z;
+        
+        // Animate swing by rotating the arm
         let frame = 0;
-        const totalFrames = 25; // More frames for smoother, slower animation
+        const totalFrames = 25;
         const swingInterval = setInterval(() => {
             frame++;
             const progress = frame / totalFrames;
             
-            // Swing from right side across to left
-            const forward = camera.getDirection(new BABYLON.Vector3(0, 0, 1));
-            const right = camera.getDirection(new BABYLON.Vector3(1, 0, 0));
-            const up = camera.getDirection(new BABYLON.Vector3(0, 1, 0));
+            // Swing arc: arm goes from right side, forward, to left side
+            // Rotation.x controls forward/back, rotation.z controls side angle
+            const swingPhase = Math.sin(progress * Math.PI); // 0 -> 1 -> 0 arc
             
-            // Start from right side, swing to left
-            const swingAngle = Math.PI * 1.2 * progress; // Wider arc
-            const startAngle = -Math.PI * 0.4; // Start from right
-            const currentAngle = startAngle + swingAngle;
-            
-            // Position bat relative to camera/player position
-            const horizontalOffset = Math.cos(currentAngle) * 0.8;
-            const verticalOffset = -0.3 + Math.sin(progress * Math.PI) * 0.2; // Slight arc
-            const forwardOffset = 0.6;
-            
-            const offset = right.scale(horizontalOffset)
-                .add(forward.scale(forwardOffset))
-                .add(up.scale(verticalOffset));
-            
-            batMesh.position.copyFrom(camera.position.clone().add(offset));
-            
-            // Rotate bat to follow swing arc
-            batMesh.rotation.y = camera.rotation.y;
-            batMesh.rotation.z = currentAngle;
-            batMesh.rotation.x = Math.PI / 2.5;
+            // Arm swings forward and across
+            player.rightArm.rotation.x = -1.5 * swingPhase; // Forward swing
+            player.rightArm.rotation.z = -Math.PI / 6 + (Math.PI * 0.8 * progress); // Sweep from right to left
+            player.rightArm.rotation.y = -0.5 * swingPhase; // Slight twist
             
             // Check for hits during swing
             checkBatHits();
@@ -1041,14 +1031,22 @@ var createScene = function () {
                 clearInterval(swingInterval);
                 batMesh.visibility = 0;
                 isSwingingBat = false;
+                
+                // Reset arm to original position
+                player.rightArm.rotation.x = originalArmRotX;
+                player.rightArm.rotation.z = originalArmRotZ;
+                player.rightArm.rotation.y = 0;
             }
         }, BAT_SWING_DURATION / totalFrames);
         
+        // Get forward direction for server emit
+        const forward = camera.getDirection(new BABYLON.Vector3(0, 0, 1));
+        
         // Emit to server
         socket.emit('batSwing', {
-            x: camera.position.x,
-            y: camera.position.y,
-            z: camera.position.z,
+            x: playerPhysicsBody.position.x,
+            y: playerPhysicsBody.position.y,
+            z: playerPhysicsBody.position.z,
             dirX: forward.x,
             dirY: forward.y,
             dirZ: forward.z
@@ -1064,14 +1062,17 @@ var createScene = function () {
     function checkBatHits() {
         if (!batMesh || batMesh.visibility === 0) return;
         
+        // Get bat world position (since it's parented to arm)
+        const batWorldPos = batMesh.getAbsolutePosition();
+        
         // Check other players
         Object.keys(otherPlayers).forEach(playerId => {
             const otherPlayer = otherPlayers[playerId];
             if (otherPlayer.collider) {
-                const distance = BABYLON.Vector3.Distance(batMesh.position, otherPlayer.collider.position);
-                if (distance < BAT_RANGE) {
+                const distance = BABYLON.Vector3.Distance(batWorldPos, otherPlayer.collider.position);
+                if (distance < BAT_RANGE + 1.0) { // Slightly increased range since bat is on arm
                     // Apply knockback
-                    const direction = otherPlayer.collider.position.subtract(batMesh.position).normalize();
+                    const direction = otherPlayer.collider.position.subtract(batWorldPos).normalize();
                     if (otherPlayer.collider.physicsImpostor) {
                         otherPlayer.collider.physicsImpostor.applyImpulse(
                             direction.scale(BAT_KNOCKBACK_FORCE),
@@ -1085,9 +1086,9 @@ var createScene = function () {
         // Check spawned blocks
         spawnedBlocks.forEach(block => {
             if (block.physicsImpostor) {
-                const distance = BABYLON.Vector3.Distance(batMesh.position, block.position);
-                if (distance < BAT_RANGE) {
-                    const direction = block.position.subtract(batMesh.position).normalize();
+                const distance = BABYLON.Vector3.Distance(batWorldPos, block.position);
+                if (distance < BAT_RANGE + 1.0) {
+                    const direction = block.position.subtract(batWorldPos).normalize();
                     block.physicsImpostor.applyImpulse(
                         direction.scale(BAT_KNOCKBACK_FORCE * 2),
                         block.getAbsolutePosition()
@@ -1517,6 +1518,16 @@ function addOtherPlayer(playerInfo) {
     const mesh = createCharacterMesh(scene, "otherPlayer_" + playerInfo.playerId, new BABYLON.Color3(1, 0.3, 0.3), playerInfo.username || "Player");
     mesh.position.set(playerInfo.x, playerInfo.y - 0.5, playerInfo.z);
     
+    // Create bat for this player (attached to their right arm, hidden by default)
+    const otherBat = BABYLON.MeshBuilder.CreateCapsule("otherBat_" + playerInfo.playerId, {height: 3.0, radius: 0.08}, scene);
+    const otherBatMat = new BABYLON.StandardMaterial("otherBatMat_" + playerInfo.playerId, scene);
+    otherBatMat.diffuseColor = new BABYLON.Color3(0.4, 0.2, 0.1);
+    otherBatMat.emissiveColor = new BABYLON.Color3(0.1, 0.05, 0.025);
+    otherBat.material = otherBatMat;
+    otherBat.parent = mesh.rightArm;
+    otherBat.position.set(0, -1.5, 0);
+    otherBat.visibility = 0;
+    
     // Physics collider (invisible, for collisions)
     const collider = BABYLON.MeshBuilder.CreateSphere("otherCollider_" + playerInfo.playerId, {diameter: 1.5, segments: 8}, scene);
     collider.position.set(playerInfo.x, playerInfo.y, playerInfo.z);
@@ -1525,7 +1536,8 @@ function addOtherPlayer(playerInfo) {
     
     otherPlayers[playerInfo.playerId] = { 
         mesh, 
-        collider, 
+        collider,
+        batMesh: otherBat,  // Store the bat mesh for this player
         chargingBall: null,  // For showing their charging ultimate
         grenadeChargingBall: null,  // For showing their charging grenade
         lastAnimState: 'idle',
@@ -1820,6 +1832,7 @@ socket.on('ballShot', (ballData) => {
         // If we want to track who knocked us off, we should store the last hitter
         lastHitterId = ballData.shooterId;
         lastHitterTime = Date.now();
+        lastHitCause = "Knocked into the void by Ball";
         
         if (isChargingUltimate) {
             cancelUltimate();
@@ -1872,23 +1885,70 @@ socket.on('ultimateShot', (ultimateData) => {
 
 // Receive bat swings from other players
 socket.on('batSwung', (batData) => {
-    // Visual effect for other player's bat swing (optional)
-    // Could show a quick swoosh effect at their position
-    console.log('Player swung bat at:', batData.x, batData.y, batData.z);
+    const playerId = batData.playerId;
+    
+    // Show arm swing animation and bat on the other player
+    if (otherPlayers[playerId]) {
+        const otherPlayer = otherPlayers[playerId];
+        const mesh = otherPlayer.mesh;
+        const bat = otherPlayer.batMesh;
+        
+        if (mesh && mesh.rightArm) {
+            // Show the bat
+            if (bat) {
+                bat.visibility = 1;
+            }
+            
+            // Store original arm rotation
+            const originalRotX = mesh.rightArm.rotation.x;
+            const originalRotZ = mesh.rightArm.rotation.z;
+            const originalRotY = mesh.rightArm.rotation.y || 0;
+            
+            // Animate the swing (must match BAT_SWING_DURATION = 300ms)
+            let frame = 0;
+            const totalFrames = 25;
+            const swingDuration = 300; // Match BAT_SWING_DURATION
+            const swingInterval = setInterval(() => {
+                frame++;
+                const progress = frame / totalFrames;
+                const swingPhase = Math.sin(progress * Math.PI);
+                
+                mesh.rightArm.rotation.x = -1.5 * swingPhase;
+                mesh.rightArm.rotation.z = -Math.PI / 6 + (Math.PI * 0.8 * progress);
+                mesh.rightArm.rotation.y = -0.5 * swingPhase;
+                
+                if (frame >= totalFrames) {
+                    clearInterval(swingInterval);
+                    mesh.rightArm.rotation.x = originalRotX;
+                    mesh.rightArm.rotation.z = originalRotZ;
+                    mesh.rightArm.rotation.y = originalRotY;
+                    
+                    // Hide the bat after swing
+                    if (bat) {
+                        bat.visibility = 0;
+                    }
+                }
+            }, swingDuration / totalFrames);
+        }
+    }
     
     // Check if we're close enough to get hit
     if (playerPhysicsBody) {
         const batPos = new BABYLON.Vector3(batData.x, batData.y, batData.z);
         const distance = BABYLON.Vector3.Distance(batPos, playerPhysicsBody.position);
         
-        if (distance < 2.5) { // Slightly larger range for network latency
-            const direction = new BABYLON.Vector3(batData.dirX, batData.dirY, batData.dirZ);
+        if (distance < 5.0) { // Extended range for long bat + network latency
             const knockbackDir = playerPhysicsBody.position.subtract(batPos).normalize();
             knockbackDir.y += 0.3; // Add some upward force
             playerPhysicsBody.physicsImpostor.applyImpulse(
                 knockbackDir.scale(BAT_KNOCKBACK_FORCE),
                 playerPhysicsBody.getAbsolutePosition()
             );
+            
+            // Track who hit us and how
+            lastHitterId = playerId;
+            lastHitterTime = Date.now();
+            lastHitCause = "Knocked into the void with Knockback Stick";
             
             // Cancel charging abilities when hit
             if (isChargingUltimate) {
