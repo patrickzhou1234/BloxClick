@@ -471,6 +471,7 @@ let canDropBomb = true;
 
 // Preloaded 3D models
 const DRONE_MODEL_URL = "https://files.catbox.moe/z7hxt9.glb";
+const ULTIMATE_MODEL_URL = "https://files.catbox.moe/84ufxa.glb"; // TODO: Replace with actual ultimate model URL
 
 // ============ HELPER FUNCTIONS ============
 
@@ -597,7 +598,12 @@ function cleanupOtherPlayerResources(playerData) {
     if (!playerData) return;
     if (playerData.mesh) playerData.mesh.dispose();
     if (playerData.collider) playerData.collider.dispose();
-    if (playerData.chargingBall) playerData.chargingBall.dispose();
+    if (playerData.chargingBall) {
+        if (playerData.chargingBall.chargingModel) {
+            playerData.chargingBall.chargingModel.dispose();
+        }
+        playerData.chargingBall.dispose();
+    }
     if (playerData.grenadeChargingBall) playerData.grenadeChargingBall.dispose();
     if (playerData.droneChargingBall) playerData.droneChargingBall.dispose();
     if (playerData.grappleHook) playerData.grappleHook.dispose();
@@ -1031,12 +1037,33 @@ var createScene = function () {
             ballPos.y += 0.3; // Raise to hand height
             
             if (!chargingBall) {
-                // Create the charging ball
-                chargingBall = BABYLON.MeshBuilder.CreateSphere("chargingBall", {diameter: 1, segments: 16}, scene);
-                var chargeMat = new BABYLON.StandardMaterial("chargeMat", scene);
-                chargeMat.diffuseColor = new BABYLON.Color3(1, 0, 0.5);
-                chargeMat.emissiveColor = new BABYLON.Color3(0.5, 0, 0.3);
-                chargingBall.material = chargeMat;
+                // Create invisible container for the charging ball
+                chargingBall = BABYLON.MeshBuilder.CreateSphere("chargingBall", {diameter: 1, segments: 8}, scene);
+                chargingBall.visibility = 0;
+                
+                // Load the 3D model (cached from preload, so loads instantly)
+                BABYLON.SceneLoader.ImportMesh("", ULTIMATE_MODEL_URL, "", scene, function(meshes) {
+                    if (meshes.length > 0 && chargingBall && !chargingBall.isDisposed()) {
+                        const chargingModel = new BABYLON.TransformNode("chargingModel", scene);
+                        
+                        meshes.forEach(mesh => {
+                            mesh.parent = chargingModel;
+                            mesh.isPickable = false;
+                        });
+                        
+                        chargingModel.parent = chargingBall;
+                        chargingModel.position = new BABYLON.Vector3(0, 0, 0);
+                        chargingBall.chargingModel = chargingModel;
+                    }
+                }, null, function(scene, message, exception) {
+                    console.error("Failed to load charging model:", message, exception);
+                    // Fallback: make the container visible with a material
+                    chargingBall.visibility = 1;
+                    var fallbackMat = new BABYLON.StandardMaterial("chargeFallbackMat", scene);
+                    fallbackMat.diffuseColor = new BABYLON.Color3(1, 0, 0.5);
+                    fallbackMat.emissiveColor = new BABYLON.Color3(0.5, 0, 0.3);
+                    chargingBall.material = fallbackMat;
+                });
             }
             
             // Grow the ball based on charge
@@ -1374,6 +1401,9 @@ var createScene = function () {
         
         // Dispose the charging ball visual
         if (chargingBall) {
+            if (chargingBall.chargingModel) {
+                chargingBall.chargingModel.dispose();
+            }
             chargingBall.dispose();
             chargingBall = null;
         }
@@ -1385,16 +1415,36 @@ var createScene = function () {
             setTimeout(() => resetPlayerArms(), 200);
         }
         
-        // Create ultimate ball (placeholder - will be replaced with 3D model)
-        // TODO: Replace with loaded 3D model using BABYLON.SceneLoader.ImportMesh
-        const ultimateBall = BABYLON.MeshBuilder.CreateSphere("ultimateBall", {diameter: 0.6, segments: 16}, scene);
-        const ultimateMat = new BABYLON.StandardMaterial("ultimateMat", scene);
-        ultimateMat.diffuseColor = new BABYLON.Color3(1, 0, 0.5); // Magenta/pink
-        ultimateMat.emissiveColor = new BABYLON.Color3(0.8, 0, 0.4);
-        ultimateMat.specularColor = new BABYLON.Color3(1, 1, 1);
-        ultimateBall.material = ultimateMat;
+        // Create invisible collider for the ultimate projectile
+        const ultimateBall = BABYLON.MeshBuilder.CreateSphere("ultimateBall", {diameter: 0.6, segments: 8}, scene);
+        ultimateBall.visibility = 0;
         ultimateBall.position = startPos.clone();
         ultimateBall.physicsImpostor = new BABYLON.PhysicsImpostor(ultimateBall, BABYLON.PhysicsImpostor.SphereImpostor, {mass: 2, restitution: 0.8}, scene);
+        
+        // Load the external 3D model (cached from preload, so loads instantly)
+        BABYLON.SceneLoader.ImportMesh("", ULTIMATE_MODEL_URL, "", scene, function(meshes) {
+            if (meshes.length > 0 && ultimateBall && !ultimateBall.isDisposed()) {
+                const ultimateModel = new BABYLON.TransformNode("ultimateModel", scene);
+                
+                meshes.forEach(mesh => {
+                    mesh.parent = ultimateModel;
+                    mesh.isPickable = false;
+                });
+                
+                ultimateModel.parent = ultimateBall;
+                ultimateModel.position = new BABYLON.Vector3(0, 0, 0);
+                ultimateModel.scaling = new BABYLON.Vector3(0.5, 0.5, 0.5); // Adjust scale as needed
+                ultimateBall.ultimateModel = ultimateModel;
+            }
+        }, null, function(scene, message, exception) {
+            console.error("Failed to load ultimate model:", message, exception);
+            // Fallback: make the collider visible with a material
+            ultimateBall.visibility = 1;
+            const fallbackMat = new BABYLON.StandardMaterial("ultimateFallbackMat", scene);
+            fallbackMat.diffuseColor = new BABYLON.Color3(1, 0, 0.5);
+            fallbackMat.emissiveColor = new BABYLON.Color3(0.8, 0, 0.4);
+            ultimateBall.material = fallbackMat;
+        });
         
         // ULTRA fast impulse (5x normal ball speed)
         ultimateBall.physicsImpostor.applyImpulse(shootDir.scale(225), ultimateBall.getAbsolutePosition());
@@ -1403,7 +1453,12 @@ var createScene = function () {
         playerPhysicsBody.physicsImpostor.applyImpulse(shootDir.scale(-25), playerPhysicsBody.getAbsolutePosition());
         
         // Remove after 10 seconds
-        setTimeout(() => { ultimateBall.dispose(); }, 10000);
+        setTimeout(() => {
+            if (ultimateBall.ultimateModel) {
+                ultimateBall.ultimateModel.dispose();
+            }
+            ultimateBall.dispose();
+        }, 10000);
         
         // Emit to other players
         socket.emit('shootUltimate', {
@@ -1422,6 +1477,9 @@ var createScene = function () {
             document.getElementById('ultimateBar').style.width = '0%';
             
             if (chargingBall) {
+                if (chargingBall.chargingModel) {
+                    chargingBall.chargingModel.dispose();
+                }
                 chargingBall.dispose();
                 chargingBall = null;
             }
@@ -2004,6 +2062,14 @@ function preloadModels() {
     }, null, function(scene, message, exception) {
         console.warn("Failed to preload drone model (will load on first use):", message);
     });
+    
+    // Preload ultimate model - load it once to cache, then dispose
+    BABYLON.SceneLoader.LoadAssetContainer(ULTIMATE_MODEL_URL, "", scene, function(container) {
+        console.log("Ultimate model cached successfully");
+        // Don't add to scene, just caching for later use
+    }, null, function(scene, message, exception) {
+        console.warn("Failed to preload ultimate model (will load on first use):", message);
+    });
 }
 
 // Preload models on startup
@@ -2124,10 +2190,34 @@ function applyOtherPlayerAnimation(playerData, animState, chargeLevel, grenadeCh
         // Create or update charging ball
         if (!playerData.chargingBall) {
             playerData.chargingBall = BABYLON.MeshBuilder.CreateSphere("otherChargingBall", {diameter: 1, segments: 8}, scene);
-            const chargeMat = new BABYLON.StandardMaterial("otherChargeMat", scene);
-            chargeMat.diffuseColor = new BABYLON.Color3(1, 0, 0.5);
-            chargeMat.emissiveColor = new BABYLON.Color3(0.5, 0, 0.3);
-            playerData.chargingBall.material = chargeMat;
+            playerData.chargingBall.visibility = 0;
+            
+            // Load the 3D model (cached from preload, so loads instantly)
+            const targetBall = playerData.chargingBall;
+            BABYLON.SceneLoader.ImportMesh("", ULTIMATE_MODEL_URL, "", scene, function(meshes) {
+                if (meshes.length > 0 && targetBall && !targetBall.isDisposed()) {
+                    const chargingModel = new BABYLON.TransformNode("otherChargingModel", scene);
+                    
+                    meshes.forEach(mesh => {
+                        mesh.parent = chargingModel;
+                        mesh.isPickable = false;
+                    });
+                    
+                    chargingModel.parent = targetBall;
+                    chargingModel.position = new BABYLON.Vector3(0, 0, 0);
+                    targetBall.chargingModel = chargingModel;
+                }
+            }, null, function(scene, message, exception) {
+                console.error("Failed to load other player charging model:", message, exception);
+                // Fallback: make the container visible with a material
+                if (targetBall && !targetBall.isDisposed()) {
+                    targetBall.visibility = 1;
+                    const fallbackMat = new BABYLON.StandardMaterial("otherChargeFallbackMat", scene);
+                    fallbackMat.diffuseColor = new BABYLON.Color3(1, 0, 0.5);
+                    fallbackMat.emissiveColor = new BABYLON.Color3(0.5, 0, 0.3);
+                    targetBall.material = fallbackMat;
+                }
+            });
         }
         
         // Size based on charge
@@ -2148,6 +2238,9 @@ function applyOtherPlayerAnimation(playerData, animState, chargeLevel, grenadeCh
     } else {
         // Dispose ultimate charging ball if not charging ultimate
         if (playerData.chargingBall) {
+            if (playerData.chargingBall.chargingModel) {
+                playerData.chargingBall.chargingModel.dispose();
+            }
             playerData.chargingBall.dispose();
             playerData.chargingBall = null;
         }
@@ -2516,15 +2609,36 @@ socket.on('ballShot', (ballData) => {
 
 // Receive ultimate shots from other players
 socket.on('ultimateShot', (ultimateData) => {
-    // TODO: Replace with loaded 3D model
-    const ultimateBall = BABYLON.MeshBuilder.CreateSphere("ultimateBall", {diameter: 0.6, segments: 16}, scene);
-    const ultimateMat = new BABYLON.StandardMaterial("ultimateMat", scene);
-    ultimateMat.diffuseColor = new BABYLON.Color3(0.8, 0, 0.8); // Purple for other players
-    ultimateMat.emissiveColor = new BABYLON.Color3(0.5, 0, 0.5);
-    ultimateMat.specularColor = new BABYLON.Color3(1, 1, 1);
-    ultimateBall.material = ultimateMat;
+    // Create invisible collider for the ultimate projectile
+    const ultimateBall = BABYLON.MeshBuilder.CreateSphere("ultimateBall", {diameter: 0.6, segments: 8}, scene);
+    ultimateBall.visibility = 0;
     ultimateBall.position.set(ultimateData.x, ultimateData.y, ultimateData.z);
     ultimateBall.physicsImpostor = new BABYLON.PhysicsImpostor(ultimateBall, BABYLON.PhysicsImpostor.SphereImpostor, {mass: 2, restitution: 0.8}, scene);
+    
+    // Load the external 3D model (cached from preload, so loads instantly)
+    BABYLON.SceneLoader.ImportMesh("", ULTIMATE_MODEL_URL, "", scene, function(meshes) {
+        if (meshes.length > 0 && ultimateBall && !ultimateBall.isDisposed()) {
+            const ultimateModel = new BABYLON.TransformNode("ultimateModel", scene);
+            
+            meshes.forEach(mesh => {
+                mesh.parent = ultimateModel;
+                mesh.isPickable = false;
+            });
+            
+            ultimateModel.parent = ultimateBall;
+            ultimateModel.position = new BABYLON.Vector3(0, 0, 0);
+            ultimateModel.scaling = new BABYLON.Vector3(0.5, 0.5, 0.5); // Adjust scale as needed
+            ultimateBall.ultimateModel = ultimateModel;
+        }
+    }, null, function(scene, message, exception) {
+        console.error("Failed to load ultimate model:", message, exception);
+        // Fallback: make the collider visible with a material
+        ultimateBall.visibility = 1;
+        const fallbackMat = new BABYLON.StandardMaterial("ultimateFallbackMat", scene);
+        fallbackMat.diffuseColor = new BABYLON.Color3(0.8, 0, 0.8);
+        fallbackMat.emissiveColor = new BABYLON.Color3(0.5, 0, 0.5);
+        ultimateBall.material = fallbackMat;
+    });
     
     // Ultimate ball is an INSTANT KILL - triggers death on collision with player
     ultimateBall.physicsImpostor.registerOnPhysicsCollide(playerPhysicsBody.physicsImpostor, () => {
@@ -2550,6 +2664,9 @@ socket.on('ultimateShot', (ultimateData) => {
     // Remove after 10 seconds
     setTimeout(() => {
         if (ultimateBall && !ultimateBall.isDisposed()) {
+            if (ultimateBall.ultimateModel) {
+                ultimateBall.ultimateModel.dispose();
+            }
             ultimateBall.dispose();
         }
     }, 10000);
