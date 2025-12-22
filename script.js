@@ -472,6 +472,7 @@ let canDropBomb = true;
 // Preloaded 3D models
 const DRONE_MODEL_URL = "https://files.catbox.moe/z7hxt9.glb";
 const ULTIMATE_MODEL_URL = "https://files.catbox.moe/84ufxa.glb"; // TODO: Replace with actual ultimate model URL
+const BALL_MODEL_URL = "https://files.catbox.moe/5esvct.glb"; // TODO: Replace with actual ball model URL
 
 // ============ HELPER FUNCTIONS ============
 
@@ -2070,6 +2071,14 @@ function preloadModels() {
     }, null, function(scene, message, exception) {
         console.warn("Failed to preload ultimate model (will load on first use):", message);
     });
+    
+    // Preload ball model - load it once to cache, then dispose
+    BABYLON.SceneLoader.LoadAssetContainer(BALL_MODEL_URL, "", scene, function(container) {
+        console.log("Ball model cached successfully");
+        // Don't add to scene, just caching for later use
+    }, null, function(scene, message, exception) {
+        console.warn("Failed to preload ball model (will load on first use):", message);
+    });
 }
 
 // Preload models on startup
@@ -2533,13 +2542,36 @@ socket.on('clearBlocks', () => {
 
 // Receive balls shot by other players
 socket.on('ballShot', (ballData) => {
+    // Create invisible physics ball
     const ball = BABYLON.MeshBuilder.CreateSphere("ball", {diameter: 0.3, segments: 8}, scene);
-    const ballMat = new BABYLON.StandardMaterial("ballMat", scene);
-    ballMat.diffuseColor = new BABYLON.Color3(1, 0.5, 0); // Orange for other players
-    ballMat.emissiveColor = new BABYLON.Color3(0.3, 0.15, 0);
-    ball.material = ballMat;
+    ball.visibility = 0;
     ball.position.set(ballData.x, ballData.y, ballData.z);
     ball.physicsImpostor = new BABYLON.PhysicsImpostor(ball, BABYLON.PhysicsImpostor.SphereImpostor, {mass: 0.5, restitution: 0.5}, scene);
+    
+    // Load the 3D model (cached from preload, so loads instantly)
+    BABYLON.SceneLoader.ImportMesh("", BALL_MODEL_URL, "", scene, function(meshes) {
+        if (meshes.length > 0 && ball && !ball.isDisposed()) {
+            const ballModel = new BABYLON.TransformNode("ballModel", scene);
+            
+            meshes.forEach(mesh => {
+                mesh.parent = ballModel;
+                mesh.isPickable = false;
+            });
+            
+            ballModel.parent = ball;
+            ballModel.position = new BABYLON.Vector3(0, 0, 0);
+            ballModel.scaling = new BABYLON.Vector3(0.3, 0.3, 0.3); // Adjust scale as needed
+            ball.ballModel = ballModel;
+        }
+    }, null, function(scene, message, exception) {
+        console.error("Failed to load ball model:", message, exception);
+        // Fallback: make the ball visible with a material
+        ball.visibility = 1;
+        const fallbackMat = new BABYLON.StandardMaterial("ballFallbackMat", scene);
+        fallbackMat.diffuseColor = new BABYLON.Color3(1, 0.5, 0); // Orange for other players
+        fallbackMat.emissiveColor = new BABYLON.Color3(0.3, 0.15, 0);
+        ball.material = fallbackMat;
+    });
     
     // Apply impulse in the direction it was shot
     const dir = new BABYLON.Vector3(ballData.dirX, ballData.dirY, ballData.dirZ);
@@ -2603,6 +2635,9 @@ socket.on('ballShot', (ballData) => {
     
     // Remove ball after 5 seconds
     setTimeout(() => {
+        if (ball.ballModel) {
+            ball.ballModel.dispose();
+        }
         ball.dispose();
     }, 5000);
 });
@@ -3180,20 +3215,48 @@ scene.onPointerObservable.add((pointerInfo) => {
             const shootDir = camera.getDirection(new BABYLON.Vector3(0, 0, 1));
             const startPos = playerPhysicsBody.position.add(shootDir.scale(1.5));
             
+            // Create invisible physics ball
             const ball = BABYLON.MeshBuilder.CreateSphere("ball", {diameter: 0.3, segments: 8}, scene);
-            const ballMat = new BABYLON.StandardMaterial("ballMat", scene);
-            ballMat.diffuseColor = new BABYLON.Color3(1, 1, 0);
-            ballMat.emissiveColor = new BABYLON.Color3(0.3, 0.3, 0);
-            ball.material = ballMat;
+            ball.visibility = 0;
             ball.position = startPos.clone();
             ball.physicsImpostor = new BABYLON.PhysicsImpostor(ball, BABYLON.PhysicsImpostor.SphereImpostor, {mass: 0.5, restitution: 0.5}, scene);
+            
+            // Load the 3D model (cached from preload, so loads instantly)
+            BABYLON.SceneLoader.ImportMesh("", BALL_MODEL_URL, "", scene, function(meshes) {
+                if (meshes.length > 0 && ball && !ball.isDisposed()) {
+                    const ballModel = new BABYLON.TransformNode("ballModel", scene);
+                    
+                    meshes.forEach(mesh => {
+                        mesh.parent = ballModel;
+                        mesh.isPickable = false;
+                    });
+                    
+                    ballModel.parent = ball;
+                    ballModel.position = new BABYLON.Vector3(0, 0, 0);
+                    ballModel.scaling = new BABYLON.Vector3(0.3, 0.3, 0.3); // Adjust scale as needed
+                    ball.ballModel = ballModel;
+                }
+            }, null, function(scene, message, exception) {
+                console.error("Failed to load ball model:", message, exception);
+                // Fallback: make the ball visible with a material
+                ball.visibility = 1;
+                const fallbackMat = new BABYLON.StandardMaterial("ballFallbackMat", scene);
+                fallbackMat.diffuseColor = new BABYLON.Color3(1, 1, 0);
+                fallbackMat.emissiveColor = new BABYLON.Color3(0.3, 0.3, 0);
+                ball.material = fallbackMat;
+            });
             
             ball.physicsImpostor.applyImpulse(shootDir.scale(15), ball.getAbsolutePosition());
             
             // Recoil knockback - push player backwards
             playerPhysicsBody.physicsImpostor.applyImpulse(shootDir.scale(-3), playerPhysicsBody.getAbsolutePosition());
             
-            setTimeout(() => { ball.dispose(); }, 5000);
+            setTimeout(() => {
+                if (ball.ballModel) {
+                    ball.ballModel.dispose();
+                }
+                ball.dispose();
+            }, 5000);
             
             socket.emit('shootBall', {
                 x: startPos.x, y: startPos.y, z: startPos.z,
