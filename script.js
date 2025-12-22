@@ -201,17 +201,7 @@ socket.on('privateRoomJoined', (data) => {
     privateRoomOverlay.style.display = 'none';
     selectedRoomId = data.roomId;
     
-    // Clear other players and blocks
-    Object.values(otherPlayers).forEach(p => {
-        if (p.mesh) p.mesh.dispose();
-        if (p.collider) p.collider.dispose();
-        if (p.chargingBall) p.chargingBall.dispose();
-        if (p.grenadeChargingBall) p.grenadeChargingBall.dispose();
-    });
-    Object.keys(otherPlayers).forEach(key => delete otherPlayers[key]);
-    
-    spawnedBlocks.forEach(mesh => mesh.dispose());
-    spawnedBlocks.length = 0;
+    clearRoomState();
     
     Swal.fire({
         icon: 'success',
@@ -322,18 +312,7 @@ window.selectRoom = function(roomId) {
     // If already in a room, leave it first
     if (hasJoined && selectedRoomId !== roomId) {
         socket.emit('leaveRoom', { roomId: selectedRoomId });
-        
-        // Clear other players and blocks from current room
-        Object.values(otherPlayers).forEach(p => {
-            if (p.mesh) p.mesh.dispose();
-            if (p.collider) p.collider.dispose();
-            if (p.chargingBall) p.chargingBall.dispose();
-            if (p.grenadeChargingBall) p.grenadeChargingBall.dispose();
-        });
-        Object.keys(otherPlayers).forEach(key => delete otherPlayers[key]);
-        
-        spawnedBlocks.forEach(mesh => mesh.dispose());
-        spawnedBlocks.length = 0;
+        clearRoomState();
     }
     
     selectedRoomId = roomId;
@@ -489,6 +468,156 @@ const DRONE_CHARGE_RATE = 100 / (DRONE_CHARGE_TIME / 16.67);
 const DRONE_SPEED = 0.3; // Movement speed
 const DRONE_BOMB_COOLDOWN = 1000; // 1 second between bombs
 let canDropBomb = true;
+
+// Preloaded 3D models
+const DRONE_MODEL_URL = "https://files.catbox.moe/z7hxt9.glb";
+
+// ============ HELPER FUNCTIONS ============
+
+// Reset player arms to default idle position
+function resetPlayerArms() {
+    if (player && player.leftArm && player.rightArm) {
+        player.leftArm.rotation.x = 0;
+        player.rightArm.rotation.x = 0;
+        player.leftArm.rotation.z = Math.PI / 6;
+        player.rightArm.rotation.z = -Math.PI / 6;
+    }
+}
+
+// Reset other player's arms to default idle position
+function resetOtherPlayerArms(mesh) {
+    if (mesh && mesh.leftArm && mesh.rightArm) {
+        mesh.leftArm.rotation.x = 0;
+        mesh.rightArm.rotation.x = 0;
+        mesh.leftArm.rotation.z = Math.PI / 6;
+        mesh.rightArm.rotation.z = -Math.PI / 6;
+    }
+}
+
+// Clear all room state (when switching rooms)
+function clearRoomState() {
+    Object.values(otherPlayers).forEach(p => cleanupOtherPlayerResources(p));
+    Object.keys(otherPlayers).forEach(key => delete otherPlayers[key]);
+    
+    spawnedBlocks.forEach(mesh => mesh.dispose());
+    spawnedBlocks.length = 0;
+    Object.keys(spawnedBlocksById).forEach(key => delete spawnedBlocksById[key]);
+    
+    spawnedMines.forEach(mine => disposeMine(mine));
+    spawnedMines.length = 0;
+}
+
+// Cancel all charging abilities (used when hit by projectiles)
+function cancelAllChargingAbilities() {
+    if (typeof cancelUltimate === 'function' && isChargingUltimate) {
+        cancelUltimate();
+    }
+    if (typeof cancelGrenade === 'function' && isChargingGrenade) {
+        cancelGrenade();
+    }
+    if (typeof window.cancelDrone === 'function' && isChargingDrone) {
+        window.cancelDrone();
+    }
+}
+
+// Create explosion flash effect at position
+function createFlashEffect(position, color = new BABYLON.Color3(1, 0.5, 0)) {
+    const flash = BABYLON.MeshBuilder.CreateSphere("flash", {diameter: 1, segments: 8}, scene);
+    const flashMat = new BABYLON.StandardMaterial("flashMat", scene);
+    flashMat.diffuseColor = color;
+    flashMat.emissiveColor = color;
+    flashMat.alpha = 0.8;
+    flash.material = flashMat;
+    flash.position.copyFrom(position);
+    
+    let scale = 1;
+    const expandInterval = setInterval(() => {
+        scale += 0.5;
+        flashMat.alpha -= 0.15;
+        flash.scaling.setAll(scale);
+        if (flashMat.alpha <= 0) {
+            clearInterval(expandInterval);
+            flash.dispose();
+        }
+    }, 30);
+    
+    return flash;
+}
+
+// Create mine mesh with flashing effect
+function createMineMesh(mineId, position) {
+    const mine = BABYLON.MeshBuilder.CreateCylinder("mine_" + mineId, {
+        height: 0.15,
+        diameter: 0.8,
+        tessellation: 16
+    }, scene);
+    
+    mine.position.copyFrom(position);
+    
+    const mineMat = new BABYLON.StandardMaterial("mineMat_" + mineId, scene);
+    mineMat.diffuseColor = new BABYLON.Color3(1, 0, 0);
+    mineMat.emissiveColor = new BABYLON.Color3(0.5, 0, 0);
+    mine.material = mineMat;
+    
+    mine.enableEdgesRendering();
+    mine.edgesWidth = 3.0;
+    mine.edgesColor = new BABYLON.Color4(1, 0.3, 0.3, 1);
+    
+    mine.mineId = mineId;
+    
+    let flashState = true;
+    mine.flashInterval = setInterval(() => {
+        if (mine.isDisposed()) {
+            clearInterval(mine.flashInterval);
+            return;
+        }
+        flashState = !flashState;
+        if (flashState) {
+            mineMat.emissiveColor = new BABYLON.Color3(0.8, 0, 0);
+            mineMat.diffuseColor = new BABYLON.Color3(1, 0.2, 0.2);
+        } else {
+            mineMat.emissiveColor = new BABYLON.Color3(0.2, 0, 0);
+            mineMat.diffuseColor = new BABYLON.Color3(0.5, 0, 0);
+        }
+    }, 300);
+    
+    return mine;
+}
+
+// Dispose mine safely
+function disposeMine(mine) {
+    if (mine) {
+        if (mine.flashInterval) clearInterval(mine.flashInterval);
+        mine.dispose();
+    }
+}
+
+// Cleanup other player resources
+function cleanupOtherPlayerResources(playerData) {
+    if (!playerData) return;
+    if (playerData.mesh) playerData.mesh.dispose();
+    if (playerData.collider) playerData.collider.dispose();
+    if (playerData.chargingBall) playerData.chargingBall.dispose();
+    if (playerData.grenadeChargingBall) playerData.grenadeChargingBall.dispose();
+    if (playerData.droneChargingBall) playerData.droneChargingBall.dispose();
+    if (playerData.grappleHook) playerData.grappleHook.dispose();
+    if (playerData.grappleLine) playerData.grappleLine.dispose();
+    if (playerData.droneMesh) {
+        if (playerData.droneMesh.droneModel) {
+            playerData.droneMesh.droneModel.getChildMeshes().forEach(mesh => mesh.dispose());
+            playerData.droneMesh.droneModel.dispose();
+        }
+        playerData.droneMesh.dispose();
+    }
+}
+
+// Show red damage overlay flash
+function showDamageFlash(duration = 150) {
+    const redOverlay = document.createElement('div');
+    redOverlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(255,0,0,0.5);pointer-events:none;z-index:9999;';
+    document.body.appendChild(redOverlay);
+    setTimeout(() => redOverlay.remove(), duration);
+}
 
 // Animation state for network sync
 let currentAnimState = 'idle'; // 'idle', 'shooting', 'building', 'charging'
@@ -1074,12 +1203,32 @@ var createScene = function () {
             for (let dir of droneRayDirs) {
                 const ray = new BABYLON.Ray(droneMesh.position, dir, 0.5);
                 const hit = scene.pickWithRay(ray, function(mesh) {
-                    return mesh !== droneMesh && 
-                           !mesh.name.startsWith("drone") &&
-                           !mesh.name.startsWith("prop") &&
-                           mesh.name !== "skybox" &&
-                           mesh.name !== "front" &&
-                           mesh !== playerPhysicsBody;
+                    // Exclude the drone collider and any child meshes of the drone model
+                    if (mesh === droneMesh) return false;
+                    if (mesh.name.startsWith("drone")) return false;
+                    if (mesh.name.startsWith("prop")) return false;
+                    if (mesh.name === "skybox") return false;
+                    if (mesh.name === "front") return false;
+                    if (mesh === playerPhysicsBody) return false;
+                    
+                    // Check if this mesh is a descendant of droneMesh (including loaded model meshes)
+                    let current = mesh;
+                    while (current) {
+                        if (current === droneMesh) {
+                            return false;
+                        }
+                        current = current.parent;
+                    }
+                    
+                    // Also check by checking if the mesh is in the drone model's children
+                    if (droneMesh.droneModel) {
+                        const droneChildren = droneMesh.droneModel.getChildMeshes(false);
+                        if (droneChildren.includes(mesh)) {
+                            return false;
+                        }
+                    }
+                    
+                    return true;
                 });
                 
                 if (hit && hit.hit) {
@@ -1231,16 +1380,9 @@ var createScene = function () {
         
         // Arm throw animation - fling arms forward then reset
         if (player.leftArm && player.rightArm) {
-            player.leftArm.rotation.x = -1.8; // Fling forward
+            player.leftArm.rotation.x = -1.8;
             player.rightArm.rotation.x = -1.8;
-            setTimeout(() => {
-                if (player.leftArm && player.rightArm) {
-                    player.leftArm.rotation.x = 0;
-                    player.rightArm.rotation.x = 0;
-                    player.leftArm.rotation.z = Math.PI / 6;
-                    player.rightArm.rotation.z = -Math.PI / 6;
-                }
-            }, 200);
+            setTimeout(() => resetPlayerArms(), 200);
         }
         
         // Create ultimate ball (placeholder - will be replaced with 3D model)
@@ -1279,19 +1421,12 @@ var createScene = function () {
             document.getElementById('ultimateContainer').style.display = 'none';
             document.getElementById('ultimateBar').style.width = '0%';
             
-            // Dispose the charging ball
             if (chargingBall) {
                 chargingBall.dispose();
                 chargingBall = null;
             }
             
-            // Reset arms to normal position
-            if (player.leftArm && player.rightArm) {
-                player.leftArm.rotation.x = 0;
-                player.rightArm.rotation.x = 0;
-                player.leftArm.rotation.z = Math.PI / 6;
-                player.rightArm.rotation.z = -Math.PI / 6;
-            }
+            resetPlayerArms();
         }
     };
     
@@ -1435,18 +1570,11 @@ var createScene = function () {
         const grenadeContainer = document.getElementById('grenadeContainer');
         if (grenadeContainer) grenadeContainer.style.display = 'none';
         
-        // Arm throw animation - fling arms forward then reset (like ultimate)
+        // Arm throw animation - fling arms forward then reset
         if (player.leftArm && player.rightArm) {
-            player.leftArm.rotation.x = -1.8; // Fling forward
+            player.leftArm.rotation.x = -1.8;
             player.rightArm.rotation.x = -1.8;
-            setTimeout(() => {
-                if (player.leftArm && player.rightArm) {
-                    player.leftArm.rotation.x = 0;
-                    player.rightArm.rotation.x = 0;
-                    player.leftArm.rotation.z = Math.PI / 6;
-                    player.rightArm.rotation.z = -Math.PI / 6;
-                }
-            }, 200);
+            setTimeout(() => resetPlayerArms(), 200);
         }
         
         // Create grenade projectile
@@ -1513,69 +1641,6 @@ var createScene = function () {
         currentAnimState = 'idle';
     };
     
-    // Explode grenade
-    function explodeGrenade(position, size) {
-        const numFragments = 30; // More fragments for emphasis
-        const fragmentSpeed = 25;
-        
-        for (let i = 0; i < numFragments; i++) {
-            const fragment = BABYLON.MeshBuilder.CreateSphere(
-                "fragment",
-                {diameter: 0.25, segments: 8}, // Larger and smoother
-                scene
-            );
-            const fragmentMat = new BABYLON.StandardMaterial("fragmentMat", scene);
-            fragmentMat.diffuseColor = new BABYLON.Color3(1, 0.8, 0); // Bright yellow-orange
-            fragmentMat.emissiveColor = new BABYLON.Color3(1, 0.6, 0); // Strong glow
-            fragmentMat.specularColor = new BABYLON.Color3(1, 1, 0.5);
-            fragment.material = fragmentMat;
-            fragment.position.copyFrom(position);
-            
-            fragment.physicsImpostor = new BABYLON.PhysicsImpostor(
-                fragment,
-                BABYLON.PhysicsImpostor.SphereImpostor,
-                {mass: 0.2, restitution: 0.7},
-                scene
-            );
-            
-            // Random direction
-            const theta = Math.random() * Math.PI * 2;
-            const phi = Math.random() * Math.PI;
-            const direction = new BABYLON.Vector3(
-                Math.sin(phi) * Math.cos(theta),
-                Math.sin(phi) * Math.sin(theta),
-                Math.cos(phi)
-            );
-            
-            fragment.physicsImpostor.applyImpulse(
-                direction.scale(fragmentSpeed),
-                fragment.getAbsolutePosition()
-            );
-            
-            // Check collision with player
-            fragment.physicsImpostor.registerOnPhysicsCollide(
-                playerPhysicsBody.physicsImpostor,
-                () => {
-                    if (!isDead) {
-                        // Stronger damage knockback
-                        const knockbackDir = playerPhysicsBody.position.subtract(position).normalize();
-                        playerPhysicsBody.physicsImpostor.applyImpulse(
-                            knockbackDir.scale(15), // Increased from 10 to 15
-                            playerPhysicsBody.getAbsolutePosition()
-                        );
-                    }
-                }
-            );
-            
-            // Remove after 5 seconds (longer lifetime for emphasis)
-            setTimeout(() => {
-                if (!fragment.isDisposed()) {
-                    fragment.dispose();
-                }
-            }, 3000);
-        }
-    }
-    
     // Cancel grenade
     window.cancelGrenade = function() {
         if (!isChargingGrenade) return;
@@ -1591,14 +1656,7 @@ var createScene = function () {
         const grenadeContainer = document.getElementById('grenadeContainer');
         if (grenadeContainer) grenadeContainer.style.display = 'none';
         
-        // Reset arms to normal position (like ultimate cancel)
-        if (player.leftArm && player.rightArm) {
-            player.leftArm.rotation.x = 0;
-            player.rightArm.rotation.x = 0;
-            player.leftArm.rotation.z = Math.PI / 6;
-            player.rightArm.rotation.z = -Math.PI / 6;
-        }
-        
+        resetPlayerArms();
         currentAnimState = 'idle';
     };
     
@@ -1632,13 +1690,7 @@ var createScene = function () {
                 droneChargingBall = null;
             }
             
-            // Reset arms
-            if (player.leftArm && player.rightArm) {
-                player.leftArm.rotation.x = 0;
-                player.rightArm.rotation.x = 0;
-                player.leftArm.rotation.z = Math.PI / 6;
-                player.rightArm.rotation.z = -Math.PI / 6;
-            }
+            resetPlayerArms();
         }
     };
     
@@ -1656,46 +1708,46 @@ var createScene = function () {
             droneChargingBall = null;
         }
         
-        // Create drone mesh
-        droneMesh = BABYLON.MeshBuilder.CreateBox("drone", {width: 0.8, height: 0.3, depth: 0.8}, scene);
-        const droneMat = new BABYLON.StandardMaterial("droneMat", scene);
-        droneMat.diffuseColor = new BABYLON.Color3(0.2, 0.2, 0.2);
-        droneMat.emissiveColor = new BABYLON.Color3(0, 0.3, 0.3);
-        droneMesh.material = droneMat;
+        // Create invisible collider for the drone
+        const droneCollider = BABYLON.MeshBuilder.CreateBox("droneCollider", {width: 0.8, height: 0.3, depth: 0.8}, scene);
+        droneCollider.visibility = 0;
+        droneCollider.position.x = playerPhysicsBody.position.x;
+        droneCollider.position.y = playerPhysicsBody.position.y + 5;
+        droneCollider.position.z = playerPhysicsBody.position.z;
         
         // Add physics collider for the drone so it can be hit
-        droneMesh.physicsImpostor = new BABYLON.PhysicsImpostor(
-            droneMesh,
+        droneCollider.physicsImpostor = new BABYLON.PhysicsImpostor(
+            droneCollider,
             BABYLON.PhysicsImpostor.BoxImpostor,
             {mass: 0, restitution: 0.3},
             scene
         );
         
-        // Add propeller visuals (small)
-        const prop1 = BABYLON.MeshBuilder.CreateCylinder("prop1", {height: 0.02, diameter: 0.15}, scene);
-        prop1.parent = droneMesh;
-        prop1.position.set(0.25, 0.15, 0.25);
-        prop1.material = droneMat;
+        droneMesh = droneCollider;
         
-        const prop2 = BABYLON.MeshBuilder.CreateCylinder("prop2", {height: 0.02, diameter: 0.15}, scene);
-        prop2.parent = droneMesh;
-        prop2.position.set(-0.25, 0.15, 0.25);
-        prop2.material = droneMat;
-        
-        const prop3 = BABYLON.MeshBuilder.CreateCylinder("prop3", {height: 0.02, diameter: 0.15}, scene);
-        prop3.parent = droneMesh;
-        prop3.position.set(0.25, 0.15, -0.25);
-        prop3.material = droneMat;
-        
-        const prop4 = BABYLON.MeshBuilder.CreateCylinder("prop4", {height: 0.02, diameter: 0.15}, scene);
-        prop4.parent = droneMesh;
-        prop4.position.set(-0.25, 0.15, -0.25);
-        prop4.material = droneMat;
-        
-        // Position drone above player
-        droneMesh.position.x = playerPhysicsBody.position.x;
-        droneMesh.position.y = playerPhysicsBody.position.y + 5;
-        droneMesh.position.z = playerPhysicsBody.position.z;
+        // Load the external 3D model (cached from preload, so loads instantly)
+        BABYLON.SceneLoader.ImportMesh("", DRONE_MODEL_URL, "", scene, function(meshes) {
+            if (meshes.length > 0 && droneMesh) {
+                const droneModel = new BABYLON.TransformNode("droneModel", scene);
+                
+                meshes.forEach(mesh => {
+                    mesh.parent = droneModel;
+                    mesh.isPickable = false;
+                });
+                
+                droneModel.parent = droneCollider;
+                droneModel.position = new BABYLON.Vector3(0, 0.6, 0); // Offset up to align model with collider
+                droneModel.scaling = new BABYLON.Vector3(5, 5, 5);
+                droneCollider.droneModel = droneModel;
+            }
+        }, null, function(scene, message, exception) {
+            console.error("Failed to load drone model:", message, exception);
+            droneCollider.visibility = 1;
+            const fallbackMat = new BABYLON.StandardMaterial("droneFallbackMat", scene);
+            fallbackMat.diffuseColor = new BABYLON.Color3(0.2, 0.2, 0.2);
+            fallbackMat.emissiveColor = new BABYLON.Color3(0, 0.3, 0.3);
+            droneCollider.material = fallbackMat;
+        });
         
         // Create drone camera
         droneCamera = new BABYLON.FreeCamera("droneCamera", droneMesh.position.clone(), scene);
@@ -1731,14 +1783,7 @@ var createScene = function () {
         isDroneMode = true;
         document.getElementById('droneModeIndicator').style.display = 'block';
         
-        // Reset arms
-        if (player.leftArm && player.rightArm) {
-            player.leftArm.rotation.x = 0;
-            player.rightArm.rotation.x = 0;
-            player.leftArm.rotation.z = Math.PI / 6;
-            player.rightArm.rotation.z = -Math.PI / 6;
-        }
-        
+        resetPlayerArms();
         currentAnimState = 'idle';
     };
     
@@ -1779,8 +1824,13 @@ var createScene = function () {
             camera.attachControl(canvas, true);
         }
         
-        // Dispose drone
+        // Dispose drone and its loaded model
         if (droneMesh) {
+            // Dispose the loaded 3D model if it exists
+            if (droneMesh.droneModel) {
+                droneMesh.droneModel.getChildMeshes().forEach(mesh => mesh.dispose());
+                droneMesh.droneModel.dispose();
+            }
             droneMesh.dispose();
             droneMesh = null;
         }
@@ -1847,26 +1897,7 @@ var createScene = function () {
     
     // Explode drone bomb (simple flash - no particles)
     function explodeDroneBomb(position) {
-        // Simple flash sphere that expands and fades
-        const flash = BABYLON.MeshBuilder.CreateSphere("flash", {diameter: 1, segments: 8}, scene);
-        const flashMat = new BABYLON.StandardMaterial("flashMat", scene);
-        flashMat.diffuseColor = new BABYLON.Color3(1, 0.5, 0);
-        flashMat.emissiveColor = new BABYLON.Color3(1, 0.5, 0);
-        flashMat.alpha = 0.8;
-        flash.material = flashMat;
-        flash.position.copyFrom(position);
-        
-        // Quick expand and fade
-        let scale = 1;
-        const expandInterval = setInterval(() => {
-            scale += 0.5;
-            flashMat.alpha -= 0.15;
-            flash.scaling.setAll(scale);
-            if (flashMat.alpha <= 0) {
-                clearInterval(expandInterval);
-                flash.dispose();
-            }
-        }, 30);
+        createFlashEffect(position);
         
         // Apply knockback to nearby blocks only (not the player who dropped it)
         const explosionRadius = 8;
@@ -1961,6 +1992,22 @@ function handleMovement() {
 }
 
 const scene = createScene();
+
+// Preload 3D models to cache them (they load instantly when spawning since already in browser cache)
+function preloadModels() {
+    console.log("Preloading 3D models...");
+    
+    // Preload drone model - load it once to cache, then dispose
+    BABYLON.SceneLoader.LoadAssetContainer(DRONE_MODEL_URL, "", scene, function(container) {
+        console.log("Drone model cached successfully");
+        // Don't add to scene, just caching for later use
+    }, null, function(scene, message, exception) {
+        console.warn("Failed to preload drone model (will load on first use):", message);
+    });
+}
+
+// Preload models on startup
+preloadModels();
 
 // Velocity-based prediction and smooth interpolation for other players
 let lastFrameTime = Date.now();
@@ -2251,38 +2298,38 @@ socket.on('playerMoved', (playerInfo) => {
         if (playerInfo.isDroneMode) {
             // Create drone mesh if it doesn't exist
             if (!p.droneMesh) {
+                // Create invisible collider for the drone
                 p.droneMesh = BABYLON.MeshBuilder.CreateBox("otherDrone_" + playerInfo.playerId, {width: 0.8, height: 0.3, depth: 0.8}, scene);
-                const droneMat = new BABYLON.StandardMaterial("otherDroneMat_" + playerInfo.playerId, scene);
-                droneMat.diffuseColor = new BABYLON.Color3(0.2, 0.2, 0.2);
-                droneMat.emissiveColor = new BABYLON.Color3(0, 0.3, 0.3);
-                p.droneMesh.material = droneMat;
-                
-                // Add propellers (small)
-                const propMat = new BABYLON.StandardMaterial("otherPropMat_" + playerInfo.playerId, scene);
-                propMat.diffuseColor = new BABYLON.Color3(0.1, 0.1, 0.1);
-                
-                const prop1 = BABYLON.MeshBuilder.CreateCylinder("prop1", {height: 0.02, diameter: 0.15}, scene);
-                prop1.material = propMat;
-                prop1.parent = p.droneMesh;
-                prop1.position.set(0.25, 0.2, 0.25);
-                
-                const prop2 = BABYLON.MeshBuilder.CreateCylinder("prop2", {height: 0.02, diameter: 0.15}, scene);
-                prop2.material = propMat;
-                prop2.parent = p.droneMesh;
-                prop2.position.set(-0.25, 0.2, 0.25);
-                
-                const prop3 = BABYLON.MeshBuilder.CreateCylinder("prop3", {height: 0.02, diameter: 0.15}, scene);
-                prop3.material = propMat;
-                prop3.parent = p.droneMesh;
-                prop3.position.set(0.25, 0.2, -0.25);
-                
-                const prop4 = BABYLON.MeshBuilder.CreateCylinder("prop4", {height: 0.02, diameter: 0.15}, scene);
-                prop4.material = propMat;
-                prop4.parent = p.droneMesh;
-                prop4.position.set(-0.25, 0.2, -0.25);
+                p.droneMesh.visibility = 0;
                 
                 // Initialize position
                 p.droneMesh.position.set(playerInfo.droneX, playerInfo.droneY, playerInfo.droneZ);
+                
+                // Load the external 3D model (cached from preload, so loads instantly)
+                BABYLON.SceneLoader.ImportMesh("", DRONE_MODEL_URL, "", scene, function(meshes) {
+                    if (meshes.length > 0 && p.droneMesh) {
+                        const droneModel = new BABYLON.TransformNode("otherDroneModel_" + playerInfo.playerId, scene);
+                        
+                        meshes.forEach(mesh => {
+                            mesh.parent = droneModel;
+                            mesh.isPickable = false;
+                        });
+                        
+                        droneModel.parent = p.droneMesh;
+                        droneModel.position = new BABYLON.Vector3(0, 0.6, 0); // Offset up to align model with collider
+                        droneModel.scaling = new BABYLON.Vector3(5, 5, 5);
+                        p.droneMesh.droneModel = droneModel;
+                    }
+                }, null, function(scene, message, exception) {
+                    console.error("Failed to load other player drone model:", message, exception);
+                    if (p.droneMesh) {
+                        p.droneMesh.visibility = 1;
+                        const fallbackMat = new BABYLON.StandardMaterial("otherDroneFallbackMat_" + playerInfo.playerId, scene);
+                        fallbackMat.diffuseColor = new BABYLON.Color3(0.2, 0.2, 0.2);
+                        fallbackMat.emissiveColor = new BABYLON.Color3(0, 0.3, 0.3);
+                        p.droneMesh.material = fallbackMat;
+                    }
+                });
             }
             
             // Store target position for smooth interpolation
@@ -2292,6 +2339,11 @@ socket.on('playerMoved', (playerInfo) => {
         } else {
             // Dispose drone mesh if player exits drone mode
             if (p.droneMesh) {
+                // Dispose the loaded 3D model if it exists
+                if (p.droneMesh.droneModel) {
+                    p.droneMesh.droneModel.getChildMeshes().forEach(mesh => mesh.dispose());
+                    p.droneMesh.droneModel.dispose();
+                }
                 p.droneMesh.dispose();
                 p.droneMesh = null;
             }
@@ -2301,28 +2353,7 @@ socket.on('playerMoved', (playerInfo) => {
 
 socket.on('disconnectPlayer', (playerId) => {
     if (otherPlayers[playerId]) {
-        otherPlayers[playerId].mesh.dispose();
-        if (otherPlayers[playerId].collider) {
-            otherPlayers[playerId].collider.dispose();
-        }
-        if (otherPlayers[playerId].chargingBall) {
-            otherPlayers[playerId].chargingBall.dispose();
-        }
-        if (otherPlayers[playerId].grenadeChargingBall) {
-            otherPlayers[playerId].grenadeChargingBall.dispose();
-        }
-        if (otherPlayers[playerId].grappleHook) {
-            otherPlayers[playerId].grappleHook.dispose();
-        }
-        if (otherPlayers[playerId].grappleLine) {
-            otherPlayers[playerId].grappleLine.dispose();
-        }
-        if (otherPlayers[playerId].droneMesh) {
-            otherPlayers[playerId].droneMesh.dispose();
-        }
-        if (otherPlayers[playerId].droneChargingBall) {
-            otherPlayers[playerId].droneChargingBall.dispose();
-        }
+        cleanupOtherPlayerResources(otherPlayers[playerId]);
         delete otherPlayers[playerId];
     }
 });
@@ -2349,28 +2380,15 @@ socket.on('killConfirmed', (data) => {
 
 // Update kill feed when someone dies
 socket.on('playerDied', (data) => {
-    if (otherPlayers[data.playerId]) {
-        setPlayerMeshVisibility(otherPlayers[data.playerId].mesh, false);
-        if (otherPlayers[data.playerId].collider) {
-            otherPlayers[data.playerId].collider.visibility = 0;
-        }
-        if (otherPlayers[data.playerId].chargingBall) {
-            otherPlayers[data.playerId].chargingBall.dispose();
-            otherPlayers[data.playerId].chargingBall = null;
-        }
-        if (otherPlayers[data.playerId].grenadeChargingBall) {
-            otherPlayers[data.playerId].grenadeChargingBall.dispose();
-            otherPlayers[data.playerId].grenadeChargingBall = null;
-        }
-        if (otherPlayers[data.playerId].grappleHook) {
-            otherPlayers[data.playerId].grappleHook.dispose();
-            otherPlayers[data.playerId].grappleHook = null;
-        }
-        if (otherPlayers[data.playerId].grappleLine) {
-            otherPlayers[data.playerId].grappleLine.dispose();
-            otherPlayers[data.playerId].grappleLine = null;
-        }
-        otherPlayers[data.playerId].isGrappling = false;
+    const p = otherPlayers[data.playerId];
+    if (p) {
+        setPlayerMeshVisibility(p.mesh, false);
+        if (p.collider) p.collider.visibility = 0;
+        if (p.chargingBall) { p.chargingBall.dispose(); p.chargingBall = null; }
+        if (p.grenadeChargingBall) { p.grenadeChargingBall.dispose(); p.grenadeChargingBall = null; }
+        if (p.grappleHook) { p.grappleHook.dispose(); p.grappleHook = null; }
+        if (p.grappleLine) { p.grappleLine.dispose(); p.grappleLine = null; }
+        p.isGrappling = false;
     }
     
     // Add to killfeed
@@ -2449,20 +2467,7 @@ socket.on('ballShot', (ballData) => {
         lastHitterTime = Date.now();
         lastHitCause = "Knocked into the void by Ball";
         
-        if (isChargingUltimate) {
-            cancelUltimate();
-            console.log('Ultimate cancelled - hit by ball!');
-        }
-        
-        if (isChargingGrenade) {
-            cancelGrenade();
-            console.log('Grenade cancelled - hit by ball!');
-        }
-        
-        if (isChargingDrone) {
-            window.cancelDrone();
-            console.log('Drone cancelled - hit by ball!');
-        }
+        cancelAllChargingAbilities();
     });
     
     // Check for collision with our drone
@@ -2483,12 +2488,7 @@ socket.on('ballShot', (ballData) => {
             }
             
             // Flash the screen red (damage indicator)
-            const redOverlay = document.createElement('div');
-            redOverlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(255,0,0,0.5);pointer-events:none;z-index:9999;';
-            document.body.appendChild(redOverlay);
-            setTimeout(() => {
-                redOverlay.remove();
-            }, 150);
+            showDamageFlash();
             
             // Flash the drone mesh red too
             if (droneMesh && droneMesh.material) {
@@ -2622,21 +2622,7 @@ socket.on('batSwung', (batData) => {
             lastHitterTime = Date.now();
             lastHitCause = "Knocked into the void with Knockback Stick";
             
-            // Cancel charging abilities when hit
-            if (isChargingUltimate) {
-                cancelUltimate();
-                console.log('Ultimate cancelled - hit by bat!');
-            }
-            
-            if (isChargingGrenade) {
-                cancelGrenade();
-                console.log('Grenade cancelled - hit by bat!');
-            }
-            
-            if (isChargingDrone) {
-                window.cancelDrone();
-                console.log('Drone cancelled - hit by bat!');
-            }
+            cancelAllChargingAbilities();
         }
     }
 });
@@ -2678,8 +2664,8 @@ socket.on('grenadeShot', (grenadeData) => {
     }, 10000);
 });
 
-// Explode grenade from other player (with particles)
-function explodeOtherPlayerGrenade(position, size, shooterId) {
+// Grenade explosion effect with fragments
+function explodeGrenade(position, size, shooterId) {
     const numFragments = 100; // More fragments for emphasis
     const fragmentSpeed = 10;
     
@@ -2746,36 +2732,17 @@ function explodeOtherPlayerGrenade(position, size, shooterId) {
     }
 }
 
-// Receive grenade explosion from server (triggered by another player's grenade)
+// Receive grenade explosion from server
 socket.on('grenadeExplosion', (explosionData) => {
     const position = new BABYLON.Vector3(explosionData.x, explosionData.y, explosionData.z);
-    explodeOtherPlayerGrenade(position, explosionData.size, explosionData.shooterId);
+    explodeGrenade(position, explosionData.size, explosionData.shooterId);
 });
 
 // Receive drone bomb explosion from server (lighter effect - just flash and knockback)
 socket.on('droneBombExplosion', (explosionData) => {
     const position = new BABYLON.Vector3(explosionData.x, explosionData.y, explosionData.z);
     
-    // Simple flash sphere
-    const flash = BABYLON.MeshBuilder.CreateSphere("flash", {diameter: 1, segments: 8}, scene);
-    const flashMat = new BABYLON.StandardMaterial("flashMat", scene);
-    flashMat.diffuseColor = new BABYLON.Color3(1, 0.5, 0);
-    flashMat.emissiveColor = new BABYLON.Color3(1, 0.5, 0);
-    flashMat.alpha = 0.8;
-    flash.material = flashMat;
-    flash.position.copyFrom(position);
-    
-    // Quick expand and fade
-    let scale = 1;
-    const expandInterval = setInterval(() => {
-        scale += 0.5;
-        flashMat.alpha -= 0.15;
-        flash.scaling.setAll(scale);
-        if (flashMat.alpha <= 0) {
-            clearInterval(expandInterval);
-            flash.dispose();
-        }
-    }, 30);
+    createFlashEffect(position);
     
     // Apply knockback to player if nearby (stronger to match grenade power)
     const explosionRadius = 8;
@@ -2841,15 +2808,33 @@ socket.on('yourDroneHit', (hitData) => {
         }
         
         // Flash the screen red (damage indicator)
-        const redOverlay = document.createElement('div');
-        redOverlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(255,0,0,0.5);pointer-events:none;z-index:9999;';
-        document.body.appendChild(redOverlay);
-        setTimeout(() => {
-            redOverlay.remove();
-        }, 150);
+        showDamageFlash();
         
         // Flash the drone mesh red too
-        if (droneMesh.material) {
+        if (droneMesh.droneModel) {
+            // Flash all child meshes of the loaded model
+            const childMeshes = droneMesh.droneModel.getChildMeshes();
+            const originalColors = [];
+            
+            childMeshes.forEach((mesh, i) => {
+                if (mesh.material) {
+                    originalColors[i] = mesh.material.emissiveColor ? mesh.material.emissiveColor.clone() : new BABYLON.Color3(0, 0, 0);
+                    mesh.material.emissiveColor = new BABYLON.Color3(1, 0, 0);
+                }
+            });
+            
+            setTimeout(() => {
+                if (droneMesh && droneMesh.droneModel) {
+                    const meshes = droneMesh.droneModel.getChildMeshes();
+                    meshes.forEach((mesh, i) => {
+                        if (mesh.material && originalColors[i]) {
+                            mesh.material.emissiveColor = originalColors[i];
+                        }
+                    });
+                }
+            }, 200);
+        } else if (droneMesh.material) {
+            // Fallback for box mesh
             const originalColor = droneMesh.material.emissiveColor.clone();
             droneMesh.material.emissiveColor = new BABYLON.Color3(1, 0, 0);
             setTimeout(() => {
@@ -2868,44 +2853,8 @@ socket.on('yourDroneHit', (hitData) => {
 
 // Receive mine placed by another player
 socket.on('minePlaced', (data) => {
-    // Create mine mesh
-    const mine = BABYLON.MeshBuilder.CreateCylinder("mine_" + data.mineId, {
-        height: 0.15,
-        diameter: 0.8,
-        tessellation: 16
-    }, scene);
-    
-    mine.position.set(data.x, data.y, data.z);
-    
-    // Create flashing red material
-    const mineMat = new BABYLON.StandardMaterial("mineMat_" + data.mineId, scene);
-    mineMat.diffuseColor = new BABYLON.Color3(1, 0, 0);
-    mineMat.emissiveColor = new BABYLON.Color3(0.5, 0, 0);
-    mine.material = mineMat;
-    
-    mine.enableEdgesRendering();
-    mine.edgesWidth = 3.0;
-    mine.edgesColor = new BABYLON.Color4(1, 0.3, 0.3, 1);
-    
-    mine.mineId = data.mineId;
-    
-    // Create flashing animation
-    let flashState = true;
-    mine.flashInterval = setInterval(() => {
-        if (mine.isDisposed()) {
-            clearInterval(mine.flashInterval);
-            return;
-        }
-        flashState = !flashState;
-        if (flashState) {
-            mineMat.emissiveColor = new BABYLON.Color3(0.8, 0, 0);
-            mineMat.diffuseColor = new BABYLON.Color3(1, 0.2, 0.2);
-        } else {
-            mineMat.emissiveColor = new BABYLON.Color3(0.2, 0, 0);
-            mineMat.diffuseColor = new BABYLON.Color3(0.5, 0, 0);
-        }
-    }, 300);
-    
+    const position = new BABYLON.Vector3(data.x, data.y, data.z);
+    const mine = createMineMesh(data.mineId, position);
     spawnedMines.push(mine);
 });
 
@@ -2915,8 +2864,7 @@ socket.on('mineTriggered', (data) => {
     for (let i = spawnedMines.length - 1; i >= 0; i--) {
         const mine = spawnedMines[i];
         if (mine && mine.mineId === data.mineId) {
-            if (mine.flashInterval) clearInterval(mine.flashInterval);
-            mine.dispose();
+            disposeMine(mine);
             spawnedMines.splice(i, 1);
             break;
         }
@@ -2935,17 +2883,12 @@ socket.on('mineTriggered', (data) => {
 function spawnBlock(data) {
     var mesh;
     
-    // Handle mine type separately (no physics, flashing)
+    // Handle mine type separately (with physics for dropping)
     if (data.type == "mine") {
         const mineId = data.blockId || (socket.id + '_mine_' + Date.now());
+        const position = new BABYLON.Vector3(data.position.x, data.position.y, data.position.z);
         
-        mesh = BABYLON.MeshBuilder.CreateCylinder("mine_" + mineId, {
-            height: 0.15,
-            diameter: 0.8,
-            tessellation: 16
-        }, scene);
-        
-        mesh.position.set(data.position.x, data.position.y, data.position.z);
+        mesh = createMineMesh(mineId, position);
         
         // Add physics so mine drops to floor first, then becomes static
         mesh.physicsImpostor = new BABYLON.PhysicsImpostor(
@@ -2958,7 +2901,6 @@ function spawnBlock(data) {
         // After 1 second, make the mine static so player can't push it
         setTimeout(() => {
             if (mesh && !mesh.isDisposed() && mesh.physicsImpostor) {
-                // Remove old impostor and create static one
                 const currentPos = mesh.position.clone();
                 mesh.physicsImpostor.dispose();
                 mesh.position.copyFrom(currentPos);
@@ -2970,35 +2912,6 @@ function spawnBlock(data) {
                 );
             }
         }, 1000);
-        
-        // Create flashing red material
-        const mineMat = new BABYLON.StandardMaterial("mineMat_" + mineId, scene);
-        mineMat.diffuseColor = new BABYLON.Color3(1, 0, 0);
-        mineMat.emissiveColor = new BABYLON.Color3(0.5, 0, 0);
-        mesh.material = mineMat;
-        
-        mesh.enableEdgesRendering();
-        mesh.edgesWidth = 3.0;
-        mesh.edgesColor = new BABYLON.Color4(1, 0.3, 0.3, 1);
-        
-        mesh.mineId = mineId;
-        
-        // Create flashing animation
-        let flashState = true;
-        mesh.flashInterval = setInterval(() => {
-            if (mesh.isDisposed()) {
-                clearInterval(mesh.flashInterval);
-                return;
-            }
-            flashState = !flashState;
-            if (flashState) {
-                mineMat.emissiveColor = new BABYLON.Color3(0.8, 0, 0);
-                mineMat.diffuseColor = new BABYLON.Color3(1, 0.2, 0.2);
-            } else {
-                mineMat.emissiveColor = new BABYLON.Color3(0.2, 0, 0);
-                mineMat.diffuseColor = new BABYLON.Color3(0.5, 0, 0);
-            }
-        }, 300);
         
         spawnedMines.push(mesh);
         return; // Don't add to spawnedBlocks
