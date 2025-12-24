@@ -1956,6 +1956,22 @@ var createScene = function () {
         const bomb = BABYLON.MeshBuilder.CreateSphere("droneBomb", {diameter: 0.4, segments: 16}, scene);
         bomb.visibility = 0; // Make physics sphere invisible
         
+        // Add rotation animation
+        const rotationObserver = scene.onBeforeRenderObservable.add(() => {
+            if (bomb && !bomb.isDisposed()) {
+                if (bomb.bombModel) {
+                    bomb.bombModel.rotation.y += 0.1;
+                    bomb.bombModel.rotation.x += 0.05;
+                } else {
+                    // Fallback if model not loaded yet or failed
+                    bomb.rotation.y += 0.1;
+                    bomb.rotation.x += 0.05;
+                }
+            } else {
+                scene.onBeforeRenderObservable.remove(rotationObserver);
+            }
+        });
+        
         // Drop from drone position
         bomb.position.copyFrom(droneMesh.position);
         bomb.position.y -= 0.5;
@@ -3114,6 +3130,22 @@ socket.on('droneBombDropped', (bombData) => {
     // Create invisible physics bomb
     const bomb = BABYLON.MeshBuilder.CreateSphere("otherDroneBomb", {diameter: 0.4, segments: 16}, scene);
     bomb.visibility = 0; // Make physics sphere invisible
+    
+    // Add rotation animation
+    const rotationObserver = scene.onBeforeRenderObservable.add(() => {
+        if (bomb && !bomb.isDisposed()) {
+            if (bomb.bombModel) {
+                bomb.bombModel.rotation.y += 0.1;
+                bomb.bombModel.rotation.x += 0.05;
+            } else {
+                // Fallback if model not loaded yet or failed
+                bomb.rotation.y += 0.1;
+                bomb.rotation.x += 0.05;
+            }
+        } else {
+            scene.onBeforeRenderObservable.remove(rotationObserver);
+        }
+    });
     
     bomb.position.set(bombData.x, bombData.y, bombData.z);
     
