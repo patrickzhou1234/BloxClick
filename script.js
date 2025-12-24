@@ -480,6 +480,7 @@ const ULTIMATE_MODEL_URL = "https://files.catbox.moe/84ufxa.glb"; // TODO: Repla
 const BALL_MODEL_URL = "https://files.catbox.moe/5esvct.glb"; // TODO: Replace with actual ball model URL
 const KATANA_MODEL_URL = "https://files.catbox.moe/nlqntj.glb"; // TODO: Replace with actual katana model URL
 const DRONE_BOMB_MODEL_URL = "https://files.catbox.moe/qeyyrr.glb"; // TODO: Replace with actual drone bomb model URL
+const GRENADE_MODEL_URL = "https://files.catbox.moe/nmw7yv.glb"; // TODO: Replace with actual grenade model URL
 
 // ============ HELPER FUNCTIONS ============
 
@@ -1138,14 +1139,42 @@ var createScene = function () {
             
             if (!grenadeChargingBall) {
                 grenadeChargingBall = BABYLON.MeshBuilder.CreateSphere("grenadeChargingBall", {diameter: ballSize * 2, segments: 16}, scene);
-                const chargeMat = new BABYLON.StandardMaterial("grenadeChargeMat", scene);
-                chargeMat.diffuseColor = new BABYLON.Color3(0, 1, 0);
-                chargeMat.emissiveColor = new BABYLON.Color3(0, 0.5, 0);
-                chargeMat.alpha = 0.8;
-                grenadeChargingBall.material = chargeMat;
+                grenadeChargingBall.visibility = 0; // Make invisible, only show the 3D model
+                
+                // Load the grenade 3D model
+                BABYLON.SceneLoader.ImportMesh("", GRENADE_MODEL_URL, "", scene, function(meshes) {
+                    if (meshes.length > 0 && grenadeChargingBall && !grenadeChargingBall.isDisposed()) {
+                        const grenadeModel = new BABYLON.TransformNode("grenadeChargingModel", scene);
+                        
+                        meshes.forEach(mesh => {
+                            mesh.parent = grenadeModel;
+                            mesh.isPickable = false;
+                        });
+                        
+                        grenadeModel.parent = grenadeChargingBall;
+                        grenadeModel.position = new BABYLON.Vector3(0, 0, 0);
+                        grenadeModel.scaling = new BABYLON.Vector3(0.03, 0.03, 0.03); // Scale for charging grenade
+                        grenadeChargingBall.grenadeModel = grenadeModel;
+                    }
+                }, null, function(scene, message, exception) {
+                    console.error("Failed to load grenade model:", message, exception);
+                    // Fallback: make visible with green material
+                    grenadeChargingBall.visibility = 1;
+                    const chargeMat = new BABYLON.StandardMaterial("grenadeChargeMat", scene);
+                    chargeMat.diffuseColor = new BABYLON.Color3(0, 1, 0);
+                    chargeMat.emissiveColor = new BABYLON.Color3(0, 0.5, 0);
+                    chargeMat.alpha = 0.8;
+                    grenadeChargingBall.material = chargeMat;
+                });
             }
             
             grenadeChargingBall.scaling.setAll(ballSize * 2 / 0.1);
+            
+            // Rotate the grenade model while charging
+            if (grenadeChargingBall.grenadeModel) {
+                grenadeChargingBall.grenadeModel.rotation.y += 0.1;
+                grenadeChargingBall.grenadeModel.rotation.x += 0.05;
+            }
             
             // Position ball in front of player at hand height (like ultimate)
             var lookDir = camera.getDirection(new BABYLON.Vector3(0, 0, 1));
@@ -1680,13 +1709,43 @@ var createScene = function () {
             setTimeout(() => resetPlayerArms(), 200);
         }
         
-        // Create grenade projectile
+        // Create grenade projectile (invisible collider)
         const grenade = BABYLON.MeshBuilder.CreateSphere("grenade", {diameter: grenadeSize * 2, segments: 16}, scene);
-        const grenadeMat = new BABYLON.StandardMaterial("grenadeMat", scene);
-        grenadeMat.diffuseColor = new BABYLON.Color3(0, 0.8, 0); // Green
-        grenadeMat.emissiveColor = new BABYLON.Color3(0, 0.4, 0);
-        grenadeMat.specularColor = new BABYLON.Color3(1, 1, 1);
-        grenade.material = grenadeMat;
+        grenade.visibility = 0; // Make invisible, only show the 3D model
+        
+        // Load the grenade 3D model
+        BABYLON.SceneLoader.ImportMesh("", GRENADE_MODEL_URL, "", scene, function(meshes) {
+            if (meshes.length > 0 && grenade && !grenade.isDisposed()) {
+                const grenadeModel = new BABYLON.TransformNode("grenadeModel", scene);
+                
+                meshes.forEach(mesh => {
+                    mesh.parent = grenadeModel;
+                    mesh.isPickable = false;
+                });
+                
+                grenadeModel.parent = grenade;
+                grenadeModel.position = new BABYLON.Vector3(0, 0, 0);
+                grenadeModel.scaling = new BABYLON.Vector3(0.5, 0.5, 0.5); // Adjust scale as needed
+                grenade.grenadeModel = grenadeModel;
+                
+                // Add rotation animation
+                scene.registerBeforeRender(function() {
+                    if (grenade && !grenade.isDisposed() && grenadeModel) {
+                        grenadeModel.rotation.y += 0.1;
+                        grenadeModel.rotation.x += 0.05;
+                    }
+                });
+            }
+        }, null, function(scene, message, exception) {
+            console.error("Failed to load grenade model:", message, exception);
+            // Fallback: make visible with green material
+            grenade.visibility = 1;
+            const grenadeMat = new BABYLON.StandardMaterial("grenadeMat", scene);
+            grenadeMat.diffuseColor = new BABYLON.Color3(0, 0.8, 0); // Green
+            grenadeMat.emissiveColor = new BABYLON.Color3(0, 0.4, 0);
+            grenadeMat.specularColor = new BABYLON.Color3(1, 1, 1);
+            grenade.material = grenadeMat;
+        });
         
         const forward = camera.getDirection(new BABYLON.Vector3(0, 0, 1));
         const spawnPos = camera.position.clone().add(forward.scale(1.5));
@@ -2199,7 +2258,8 @@ function preloadModels() {
         { url: ULTIMATE_MODEL_URL, name: "Ultimate" },
         { url: BALL_MODEL_URL, name: "Ball" },
         { url: KATANA_MODEL_URL, name: "Katana" },
-        { url: DRONE_BOMB_MODEL_URL, name: "Drone Bomb" }
+        { url: DRONE_BOMB_MODEL_URL, name: "Drone Bomb" },
+        { url: GRENADE_MODEL_URL, name: "Grenade" }
     ];
     
     let loadedCount = 0;
@@ -2459,17 +2519,45 @@ function applyOtherPlayerAnimation(playerData, animState, chargeLevel, grenadeCh
         // Create or update grenade charging ball
         if (!playerData.grenadeChargingBall) {
             playerData.grenadeChargingBall = BABYLON.MeshBuilder.CreateSphere("otherGrenadeChargingBall", {diameter: 1, segments: 8}, scene);
-            const chargeMat = new BABYLON.StandardMaterial("otherGrenadeChargeMat", scene);
-            chargeMat.diffuseColor = new BABYLON.Color3(0, 1, 0);
-            chargeMat.emissiveColor = new BABYLON.Color3(0, 0.5, 0);
-            chargeMat.alpha = 0.8;
-            playerData.grenadeChargingBall.material = chargeMat;
+            playerData.grenadeChargingBall.visibility = 0; // Make invisible, only show the 3D model
+            
+            // Load the grenade 3D model
+            BABYLON.SceneLoader.ImportMesh("", GRENADE_MODEL_URL, "", scene, function(meshes) {
+                if (meshes.length > 0 && playerData.grenadeChargingBall && !playerData.grenadeChargingBall.isDisposed()) {
+                    const grenadeModel = new BABYLON.TransformNode("otherGrenadeChargingModel", scene);
+                    
+                    meshes.forEach(mesh => {
+                        mesh.parent = grenadeModel;
+                        mesh.isPickable = false;
+                    });
+                    
+                    grenadeModel.parent = playerData.grenadeChargingBall;
+                    grenadeModel.position = new BABYLON.Vector3(0, 0, 0);
+                    grenadeModel.scaling = new BABYLON.Vector3(0.3, 0.3, 0.3); // Scale for charging grenade
+                    playerData.grenadeChargingBall.grenadeModel = grenadeModel;
+                }
+            }, null, function(scene, message, exception) {
+                console.error("Failed to load other player grenade model:", message, exception);
+                // Fallback: make visible with green material
+                playerData.grenadeChargingBall.visibility = 1;
+                const chargeMat = new BABYLON.StandardMaterial("otherGrenadeChargeMat", scene);
+                chargeMat.diffuseColor = new BABYLON.Color3(0, 1, 0);
+                chargeMat.emissiveColor = new BABYLON.Color3(0, 0.5, 0);
+                chargeMat.alpha = 0.8;
+                playerData.grenadeChargingBall.material = chargeMat;
+            });
         }
         
         // Size based on charge
         const chargePercent = grenadeChargeLevel / 100;
         const ballSize = GRENADE_MIN_SIZE + (GRENADE_MAX_SIZE - GRENADE_MIN_SIZE) * chargePercent;
         playerData.grenadeChargingBall.scaling.setAll(ballSize * 2 / 0.1);
+        
+        // Rotate the grenade model while charging
+        if (playerData.grenadeChargingBall.grenadeModel) {
+            playerData.grenadeChargingBall.grenadeModel.rotation.y += 0.1;
+            playerData.grenadeChargingBall.grenadeModel.rotation.x += 0.05;
+        }
         
         // Position in front of character
         const forward = new BABYLON.Vector3(Math.sin(mesh.rotation.y), 0, Math.cos(mesh.rotation.y));
@@ -2989,12 +3077,42 @@ socket.on('batSwung', (batData) => {
 // Receive grenades from other players
 socket.on('grenadeShot', (grenadeData) => {
     const grenade = BABYLON.MeshBuilder.CreateSphere("grenade", {diameter: grenadeData.size * 2, segments: 16}, scene);
-    const grenadeMat = new BABYLON.StandardMaterial("grenadeMat", scene);
-    grenadeMat.diffuseColor = new BABYLON.Color3(0, 0.8, 0); // Green
-    grenadeMat.emissiveColor = new BABYLON.Color3(0, 0.4, 0);
-    grenadeMat.specularColor = new BABYLON.Color3(1, 1, 1);
-    grenade.material = grenadeMat;
+    grenade.visibility = 0; // Make invisible, only show the 3D model
     grenade.position.set(grenadeData.x, grenadeData.y, grenadeData.z);
+    
+    // Load the grenade 3D model
+    BABYLON.SceneLoader.ImportMesh("", GRENADE_MODEL_URL, "", scene, function(meshes) {
+        if (meshes.length > 0 && grenade && !grenade.isDisposed()) {
+            const grenadeModel = new BABYLON.TransformNode("grenadeModel", scene);
+            
+            meshes.forEach(mesh => {
+                mesh.parent = grenadeModel;
+                mesh.isPickable = false;
+            });
+            
+            grenadeModel.parent = grenade;
+            grenadeModel.position = new BABYLON.Vector3(0, 0, 0);
+            grenadeModel.scaling = new BABYLON.Vector3(0.5, 0.5, 0.5); // Adjust scale as needed
+            grenade.grenadeModel = grenadeModel;
+            
+            // Add rotation animation
+            scene.registerBeforeRender(function() {
+                if (grenade && !grenade.isDisposed() && grenadeModel) {
+                    grenadeModel.rotation.y += 0.1;
+                    grenadeModel.rotation.x += 0.05;
+                }
+            });
+        }
+    }, null, function(scene, message, exception) {
+        console.error("Failed to load grenade model:", message, exception);
+        // Fallback: make visible with green material
+        grenade.visibility = 1;
+        const grenadeMat = new BABYLON.StandardMaterial("grenadeMat", scene);
+        grenadeMat.diffuseColor = new BABYLON.Color3(0, 0.8, 0); // Green
+        grenadeMat.emissiveColor = new BABYLON.Color3(0, 0.4, 0);
+        grenadeMat.specularColor = new BABYLON.Color3(1, 1, 1);
+        grenade.material = grenadeMat;
+    });
     
     grenade.physicsImpostor = new BABYLON.PhysicsImpostor(
         grenade,
