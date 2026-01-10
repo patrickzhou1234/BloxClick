@@ -392,6 +392,24 @@ module.exports = {
         };
     },
     
+    async changePassword(userId, currentPassword, newPassword) {
+        const user = statements.getUserById.get(userId);
+        
+        if (!user) {
+            return { success: false, error: 'User not found' };
+        }
+        
+        const valid = await verifyPassword(currentPassword, user.password_hash);
+        if (!valid) {
+            return { success: false, error: 'Current password is incorrect' };
+        }
+        
+        const newHash = await hashPassword(newPassword);
+        db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(newHash, userId);
+        
+        return { success: true };
+    },
+    
     trackUserIP(userId, ip) {
         statements.trackIP.run(userId, ip);
     },

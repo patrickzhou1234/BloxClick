@@ -444,7 +444,7 @@
     <div class="container">
         <header class="header">
             <h1>🎮 Block Battle Arena</h1>
-            <div class="header-links">
+            <div class="header-links" id="headerLinks">
                 <a href="/">Play Game</a>
                 <a href="/auth">Login</a>
             </div>
@@ -468,6 +468,32 @@
     </div>
     
     <script>
+        let currentUser = null;
+        
+        async function checkAuth() {
+            try {
+                const res = await fetch('/api/auth/me');
+                const data = await res.json();
+                if (data.success && data.user) {
+                    currentUser = data.user;
+                    updateHeader();
+                }
+            } catch (err) {
+                console.error('Auth check failed:', err);
+            }
+        }
+        
+        function updateHeader() {
+            const headerLinks = document.getElementById('headerLinks');
+            if (currentUser) {
+                headerLinks.innerHTML = `
+                    <a href="/">Play Game</a>
+                    <a href="/leaderboard">Leaderboard</a>
+                    <a href="/profile/${currentUser.profileId}">My Profile</a>
+                `;
+            }
+        }
+        
         function escapeHtml(text) {
             if (!text) return '';
             const div = document.createElement('div');
@@ -615,6 +641,8 @@
             window.location.href = `/profile/${profileId}`;
         }
         
+        // Initialize page
+        checkAuth();
         loadLeaderboard();
     </script>
 </body>

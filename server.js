@@ -122,6 +122,31 @@ app.post('/api/auth/logout', (req, res) => {
     res.json({ success: true });
 });
 
+// API: Change password
+app.post('/api/auth/change-password', async (req, res) => {
+    if (!req.session.user) {
+        return res.status(401).json({ success: false, error: 'Not authenticated' });
+    }
+    
+    const { currentPassword, newPassword } = req.body;
+    
+    if (!currentPassword || !newPassword) {
+        return res.status(400).json({ success: false, error: 'Current and new password required' });
+    }
+    
+    if (newPassword.length < 6) {
+        return res.status(400).json({ success: false, error: 'New password must be at least 6 characters' });
+    }
+    
+    const result = await db.changePassword(req.session.user.id, currentPassword, newPassword);
+    
+    if (result.success) {
+        res.json({ success: true });
+    } else {
+        res.status(400).json(result);
+    }
+});
+
 // API: Get current user
 app.get('/api/auth/me', (req, res) => {
     if (req.session.user) {

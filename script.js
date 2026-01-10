@@ -3508,6 +3508,44 @@ function explodeGrenade(position, size, shooterId) {
     const numFragments = 100; // More fragments for emphasis
     const fragmentSpeed = 10;
     
+    // Temporarily disable walls when grenade explodes
+    const WALL_DISABLE_DURATION = 5000; // 5 seconds
+    if (window.arenaWalls && window.arenaWalls.length > 0) {
+        window.arenaWalls.forEach(wall => {
+            if (wall && !wall.isDisposed()) {
+                // Make wall invisible and disable physics
+                wall.visibility = 0;
+                wall.checkCollisions = false;
+                if (wall.physicsImpostor) {
+                    wall.physicsImpostor.setMass(0);
+                    wall.physicsImpostor.dispose();
+                    wall._tempPhysicsDisabled = true;
+                }
+            }
+        });
+        
+        // Re-enable walls after duration
+        setTimeout(() => {
+            if (window.arenaWalls) {
+                window.arenaWalls.forEach(wall => {
+                    if (wall && !wall.isDisposed()) {
+                        wall.visibility = 1;
+                        wall.checkCollisions = true;
+                        if (wall._tempPhysicsDisabled) {
+                            wall.physicsImpostor = new BABYLON.PhysicsImpostor(
+                                wall,
+                                BABYLON.PhysicsImpostor.BoxImpostor,
+                                {mass: 0, restitution: 0.9},
+                                scene
+                            );
+                            wall._tempPhysicsDisabled = false;
+                        }
+                    }
+                });
+            }
+        }, WALL_DISABLE_DURATION);
+    }
+    
     for (let i = 0; i < numFragments; i++) {
         const fragment = BABYLON.MeshBuilder.CreateSphere(
             "fragment",

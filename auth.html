@@ -197,6 +197,7 @@
         <div class="auth-tabs">
             <button class="auth-tab active" onclick="showTab('login')">Login</button>
             <button class="auth-tab" onclick="showTab('register')">Register</button>
+            <button class="auth-tab" onclick="showTab('changePassword')" id="changePasswordTab" style="display:none;">Change Password</button>
         </div>
         
         <!-- Login Form -->
@@ -235,6 +236,24 @@
             <button type="submit" class="submit-btn" id="registerBtn">Create Account</button>
         </form>
         
+        <!-- Change Password Form -->
+        <form id="changePasswordForm" class="auth-form" onsubmit="handleChangePassword(event)">
+            <div class="form-group">
+                <label for="currentPassword">Current Password</label>
+                <input type="password" id="currentPassword" placeholder="Enter your current password" required>
+            </div>
+            <div class="form-group">
+                <label for="newPassword">New Password</label>
+                <input type="password" id="newPassword" placeholder="Enter new password (min 6 chars)" required minlength="6">
+            </div>
+            <div class="form-group">
+                <label for="confirmNewPassword">Confirm New Password</label>
+                <input type="password" id="confirmNewPassword" placeholder="Confirm new password" required>
+            </div>
+            <div class="error-msg" id="changePasswordError"></div>
+            <button type="submit" class="submit-btn" id="changePasswordBtn">Change Password</button>
+        </form>
+        
         <div class="links">
             <a href="/">← Back to Game</a>
             <a href="/leaderboard">📊 Leaderboard</a>
@@ -247,10 +266,15 @@
             .then(res => res.json())
             .then(data => {
                 if (data.success && data.user) {
-                    // Redirect to game if logged in
+                    // Show change password tab for logged-in users
+                    document.getElementById('changePasswordTab').style.display = 'block';
+                    // Check if they want to change password
                     const urlParams = new URLSearchParams(window.location.search);
-                    const redirect = urlParams.get('redirect') || '/';
-                    window.location.href = redirect;
+                    const action = urlParams.get('action');
+                    if (action === 'changePassword') {
+                        showTab('changePassword');
+                    }
+                    // Don't auto-redirect - let them use the auth page
                 }
             });
         
@@ -261,14 +285,18 @@
             if (tab === 'login') {
                 document.querySelectorAll('.auth-tab')[0].classList.add('active');
                 document.getElementById('loginForm').classList.add('active');
-            } else {
+            } else if (tab === 'register') {
                 document.querySelectorAll('.auth-tab')[1].classList.add('active');
                 document.getElementById('registerForm').classList.add('active');
+            } else if (tab === 'changePassword') {
+                document.getElementById('changePasswordTab').classList.add('active');
+                document.getElementById('changePasswordForm').classList.add('active');
             }
             
             // Clear errors
             document.getElementById('loginError').style.display = 'none';
             document.getElementById('registerError').style.display = 'none';
+            document.getElementById('changePasswordError').style.display = 'none';
         }
         
         async function handleLogin(e) {
@@ -363,6 +391,59 @@
             
             btn.disabled = false;
             btn.textContent = 'Create Account';
+        }
+        
+        async function handleChangePassword(e) {
+            e.preventDefault();
+            const btn = document.getElementById('changePasswordBtn');
+            const errorEl = document.getElementById('changePasswordError');
+            
+            const newPassword = document.getElementById('newPassword').value;
+            const confirmNewPassword = document.getElementById('confirmNewPassword').value;
+            
+            if (newPassword !== confirmNewPassword) {
+                errorEl.textContent = 'New passwords do not match';
+                errorEl.style.display = 'block';
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.textContent = 'Changing password...';
+            errorEl.style.display = 'none';
+            
+            try {
+                const res = await fetch('/api/auth/change-password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        currentPassword: document.getElementById('currentPassword').value,
+                        newPassword: newPassword
+                    })
+                });
+                
+                const data = await res.json();
+                
+                if (data.success) {
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Password Changed!',
+                        text: 'Your password has been updated successfully.',
+                        timer: 2000,
+                        showConfirmButton: false
+                    }).then(() => {
+                        window.location.href = '/';
+                    });
+                } else {
+                    errorEl.textContent = data.error || 'Failed to change password';
+                    errorEl.style.display = 'block';
+                }
+            } catch (err) {
+                errorEl.textContent = 'Network error. Please try again.';
+                errorEl.style.display = 'block';
+            }
+            
+            btn.disabled = false;
+            btn.textContent = 'Change Password';
         }
     </script>
 </body>
