@@ -944,7 +944,8 @@ const MAP_CONFIGS = {
         scaling: [1, 1, 1],
         offset: [0, 0, 0],
         rotation: [0, 0, 0],
-        spawnY: 3 // Player spawn height
+        spawnY: 3, // Player spawn height
+        groundY: 0 // Minimum Y level for ground (used for other player interpolation)
     },
     'tokyo': { 
         url: 'https://files.catbox.moe/v6664x.babylon', // Local .babylon file
@@ -953,7 +954,8 @@ const MAP_CONFIGS = {
         scaling: [0.05, 0.05, 0.05],
         offset: [0, -5, 0],
         rotation: [-Math.PI/2, 0, 0],
-        spawnY: 20
+        spawnY: 20,
+        groundY: -100 // No ground clamping for 3D model maps (let actual server Y prevail)
     }
 };
 
@@ -3721,9 +3723,10 @@ function initializeSceneExtras() {
                 // Apply gravity to Y prediction (prevents floating)
                 p.velocityY -= 9.81 * deltaTime;
                 
-                // Clamp target Y to not go below ground (approximate)
-                if (p.targetY < 0) {
-                    p.targetY = 0;
+                // Clamp target Y to not go below ground (use map's groundY level)
+                const mapGroundY = (currentMapId && MAP_CONFIGS[currentMapId]) ? MAP_CONFIGS[currentMapId].groundY : 0;
+                if (p.targetY < mapGroundY) {
+                    p.targetY = mapGroundY;
                     p.velocityY = 0;
                 }
                 
