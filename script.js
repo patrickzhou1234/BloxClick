@@ -721,6 +721,7 @@ const ULTIMATE_MAX_SIZE = 0.6;
 let batMesh = null;
 let isSwingingBat = false;
 let canSwingBat = true;
+let batHitsThisSwing = new Set(); // Track what's been hit during current swing
 const BAT_COOLDOWN = 1500; // 1.5 seconds
 const BAT_SWING_DURATION = 300; // ms - slower swing
 const BAT_KNOCKBACK_FORCE = 60; // MASSIVE knockback
@@ -2178,6 +2179,7 @@ var createScene = function () {
         
         canSwingBat = false;
         isSwingingBat = true;
+        batHitsThisSwing.clear(); // Reset hit tracking for new swing
         
         // Show katana model (or fallback to capsule visibility)
         if (batMesh.katanaModel) {
@@ -2261,8 +2263,11 @@ var createScene = function () {
                     // Apply knockback
                     const direction = otherPlayer.collider.position.subtract(batWorldPos).normalize();
                     if (otherPlayer.collider.physicsImpostor) {
-                        // Spawn explosion effect at point of contact
-                        spawnKnockbackExplosion(otherPlayer.collider.position);
+                        // Spawn explosion effect at point of contact (only once per swing per player)
+                        if (!batHitsThisSwing.has('player_' + playerId)) {
+                            batHitsThisSwing.add('player_' + playerId);
+                            spawnKnockbackExplosion(otherPlayer.collider.position);
+                        }
                         
                         otherPlayer.collider.physicsImpostor.applyImpulse(
                             direction.scale(BAT_KNOCKBACK_FORCE),
@@ -2280,8 +2285,12 @@ var createScene = function () {
                 if (distance < BAT_RANGE + 1.0) {
                     const direction = block.position.subtract(batWorldPos).normalize();
                     
-                    // Spawn explosion effect at point of contact
-                    spawnKnockbackExplosion(block.position);
+                    // Spawn explosion effect at point of contact (only once per swing per block)
+                    const blockKey = 'block_' + (block.blockId || block.uniqueId);
+                    if (!batHitsThisSwing.has(blockKey)) {
+                        batHitsThisSwing.add(blockKey);
+                        spawnKnockbackExplosion(block.position);
+                    }
                     
                     block.physicsImpostor.applyImpulse(
                         direction.scale(BAT_KNOCKBACK_FORCE * 2),
