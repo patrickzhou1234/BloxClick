@@ -465,6 +465,9 @@ const blocks = [];
 const rooms = [];
 const adminSockets = new Set();
 
+// Available maps for rooms
+const AVAILABLE_MAPS = ['default', 'tokyo'];
+
 // Create default room
 rooms.push({
     id: 'default',
@@ -474,7 +477,8 @@ rooms.push({
     players: {},
     blocks: [],
     code: null, // No code for public rooms
-    hardcoreMode: false // No walls in hardcore mode
+    hardcoreMode: false, // No walls in hardcore mode
+    mapId: 'default' // Map for this room
 });
 
 // Helper function to generate room code
@@ -492,6 +496,7 @@ function getAdminData() {
     return {
         playerCount: Object.keys(players).length,
         blockCount: blocks.length,
+        availableMaps: AVAILABLE_MAPS,
         rooms: rooms.map(room => ({
             id: room.id,
             name: room.name,
@@ -499,6 +504,7 @@ function getAdminData() {
             type: room.type,
             code: room.code,
             hardcoreMode: room.hardcoreMode || false,
+            mapId: room.mapId || 'default',
             playerCount: Object.keys(room.players).length,
             blockCount: room.blocks.length,
             players: Object.values(room.players).map(p => ({
@@ -619,11 +625,12 @@ io.on('connection', (socket) => {
         });
         socket.emit('currentPlayers', roomPlayers);
         
-        // Emit room settings (including hardcore mode)
+        // Emit room settings (including hardcore mode and map)
         socket.emit('roomSettings', {
             roomId: room.id,
             roomName: room.name,
-            hardcoreMode: room.hardcoreMode || false
+            hardcoreMode: room.hardcoreMode || false,
+            mapId: room.mapId || 'default'
         });
         
         // Emit existing blocks in the room to the new client
@@ -635,7 +642,8 @@ io.on('connection', (socket) => {
             name: r.name,
             playerCount: Object.keys(r.players).length,
             maxPlayers: r.maxPlayers,
-            type: r.type
+            type: r.type,
+            mapId: r.mapId || 'default'
         })));
 
         // Broadcast the new player to other clients IN THE SAME ROOM
@@ -1015,7 +1023,8 @@ io.on('connection', (socket) => {
             name: r.name,
             playerCount: Object.keys(r.players).length,
             maxPlayers: r.maxPlayers,
-            type: r.type
+            type: r.type,
+            mapId: r.mapId || 'default'
         })));
     });
     
@@ -1130,6 +1139,7 @@ io.on('connection', (socket) => {
         if (!adminSockets.has(socket)) return;
         
         const roomCode = roomData.type === 'private' ? generateRoomCode() : null;
+        const mapId = AVAILABLE_MAPS.includes(roomData.mapId) ? roomData.mapId : 'default';
         const newRoom = {
             id: 'room_' + Date.now(),
             name: roomData.name,
@@ -1137,6 +1147,7 @@ io.on('connection', (socket) => {
             type: roomData.type,
             code: roomCode,
             hardcoreMode: roomData.hardcoreMode || false,
+            mapId: mapId,
             players: {},
             blocks: []
         };
@@ -1144,7 +1155,8 @@ io.on('connection', (socket) => {
         broadcastToAdmins('adminData', getAdminData());
         const codeMsg = roomCode ? ` (Code: ${roomCode})` : '';
         const hardcoreMsg = newRoom.hardcoreMode ? ' [HARDCORE]' : '';
-        broadcastToAdmins('adminLog', { type: 'action', message: `Room "${roomData.name}" created${codeMsg}${hardcoreMsg}` });
+        const mapMsg = mapId !== 'default' ? ` [Map: ${mapId}]` : '';
+        broadcastToAdmins('adminLog', { type: 'action', message: `Room "${roomData.name}" created${codeMsg}${hardcoreMsg}${mapMsg}` });
     });
 
     socket.on('adminDeleteRoom', (roomId) => {
@@ -1198,7 +1210,8 @@ io.on('connection', (socket) => {
                     playerSocket.emit('roomSettings', {
                         roomId: 'default',
                         roomName: 'Default Arena',
-                        hardcoreMode: defaultRoom.hardcoreMode || false
+                        hardcoreMode: defaultRoom.hardcoreMode || false,
+                        mapId: defaultRoom.mapId || 'default'
                     });
                     
                     // Send current players in the default room
@@ -1243,13 +1256,40 @@ io.on('connection', (socket) => {
             io.to(roomId).emit('roomSettings', {
                 roomId: room.id,
                 roomName: room.name,
-                hardcoreMode: room.hardcoreMode
+                hardcoreMode: room.hardcoreMode,
+                mapId: room.mapId || 'default'
             });
             
             broadcastToAdmins('adminData', getAdminData());
             broadcastToAdmins('adminLog', { 
                 type: 'action', 
                 message: `Room "${room.name}" hardcore mode ${room.hardcoreMode ? 'ENABLED' : 'DISABLED'}` 
+            });
+        }
+    });
+
+    // Admin change room map
+    socket.on('adminChangeMap', (data) => {
+        if (!adminSockets.has(socket)) return;
+        
+        const { roomId, mapId } = data;
+        const room = rooms.find(r => r.id === roomId);
+        if (room && AVAILABLE_MAPS.includes(mapId)) {
+            const oldMapId = room.mapId || 'default';
+            room.mapId = mapId;
+            
+            // Notify all players in the room about the map change
+            io.to(roomId).emit('roomSettings', {
+                roomId: room.id,
+                roomName: room.name,
+                hardcoreMode: room.hardcoreMode || false,
+                mapId: room.mapId
+            });
+            
+            broadcastToAdmins('adminData', getAdminData());
+            broadcastToAdmins('adminLog', { 
+                type: 'action', 
+                message: `Room "${room.name}" map changed from ${oldMapId} to ${mapId}` 
             });
         }
     });

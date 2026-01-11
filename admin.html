@@ -553,6 +553,13 @@
                             <option value="private">Private</option>
                         </select>
                     </div>
+                    <div class="form-group">
+                        <label>🗺️ Map</label>
+                        <select id="roomMap">
+                            <option value="default">🏟️ Default Arena</option>
+                            <option value="tokyo">🏯 Little Tokyo</option>
+                        </select>
+                    </div>
                     <div class="form-group" style="display:flex; align-items:center; gap:10px; padding-top:25px;">
                         <input type="checkbox" id="hardcoreMode" style="width:20px; height:20px;">
                         <label for="hardcoreMode" style="margin:0; cursor:pointer;">☠️ Hardcore (No Walls)</label>
@@ -808,6 +815,12 @@
             }).join('');
         }
         
+        // Map display names
+        const mapNames = {
+            'default': '🏟️ Default',
+            'tokyo': '🏯 Tokyo'
+        };
+        
         function renderRooms(rooms) {
             const container = document.getElementById('roomsContainer');
             console.log('renderRooms called with', rooms.length, 'rooms');
@@ -824,6 +837,8 @@
             
             container.innerHTML = rooms.map(room => {
                 const roomId = room.id;
+                const mapId = room.mapId || 'default';
+                const mapDisplay = mapNames[mapId] || mapId;
                 return `
                 <div class="room-card" data-room-id="${roomId}">
                     <div class="room-header">
@@ -835,6 +850,9 @@
                         <span>📦 ${room.blockCount} blocks</span>
                         <span>${room.type === 'private' ? '🔒' : '🌐'} ${room.type}</span>
                         ${room.hardcoreMode ? '<span style="color:#e53935;">☠️ Hardcore</span>' : ''}
+                    </div>
+                    <div class="room-info" style="margin-top:5px;">
+                        <span style="background:rgba(74,144,217,0.2); padding:4px 8px; border-radius:4px;">🗺️ ${mapDisplay}</span>
                     </div>
                     ${room.code ? `
                         <div style="margin-top:10px; padding:8px; background:rgba(156,39,176,0.2); border-radius:6px; text-align:center;">
@@ -849,6 +867,7 @@
                     ` : ''}
                     <div class="room-actions">
                         <button class="mui-btn mui-btn--small" onclick="viewRoom('${roomId}')">View</button>
+                        <button class="mui-btn mui-btn--small" style="background:#4a90d9;" onclick="changeMap('${roomId}')">🗺️ Map</button>
                         <button class="mui-btn mui-btn--small" style="background:${room.hardcoreMode ? '#e53935' : '#ff9800'};" onclick="toggleHardcore('${roomId}')">
                             ${room.hardcoreMode ? '☠️ Hardcore ON' : '🛡️ Normal'}
                         </button>
@@ -907,10 +926,41 @@
             const maxPlayers = parseInt(document.getElementById('maxPlayers').value);
             const type = document.getElementById('roomType').value;
             const hardcoreMode = document.getElementById('hardcoreMode').checked;
+            const mapId = document.getElementById('roomMap').value;
             
-            socket.emit('adminCreateRoom', { name, maxPlayers, type, hardcoreMode });
+            socket.emit('adminCreateRoom', { name, maxPlayers, type, hardcoreMode, mapId });
             document.getElementById('roomName').value = '';
             document.getElementById('hardcoreMode').checked = false;
+            document.getElementById('roomMap').value = 'default';
+        }
+        
+        function changeMap(roomId) {
+            const mapOptions = {
+                'default': '🏟️ Default Arena',
+                'tokyo': '🏯 Little Tokyo'
+            };
+            
+            Swal.fire({
+                title: '🗺️ Change Map',
+                html: `
+                    <select id="mapSelect" class="swal2-input" style="width:100%;">
+                        ${Object.entries(mapOptions).map(([id, name]) => 
+                            `<option value="${id}">${name}</option>`
+                        ).join('')}
+                    </select>
+                `,
+                showCancelButton: true,
+                confirmButtonColor: '#4a90d9',
+                cancelButtonColor: '#666',
+                confirmButtonText: 'Change Map',
+                background: '#1a1a2e',
+                color: '#fff'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    const mapId = document.getElementById('mapSelect').value;
+                    socket.emit('adminChangeMap', { roomId, mapId });
+                }
+            });
         }
         
         function toggleHardcore(roomId) {

@@ -546,14 +546,27 @@ function renderRoomsList() {
         return;
     }
     
+    // Map display names
+    const mapNames = {
+        'default': '🏟️ Default Arena',
+        'tokyo': '🏯 Little Tokyo',
+        'platform': '☁️ Sky Platform',
+        'maze': '🔲 The Maze'
+    };
+    
     roomsList.innerHTML = availableRooms.map(room => {
         const isFull = room.playerCount >= room.maxPlayers;
+        const mapId = room.mapId || 'default';
+        const mapDisplay = mapNames[mapId] || mapId;
         return `
             <div style="background:rgba(255,255,255,0.05); border:2px solid ${room.id === selectedRoomId ? '#4a90d9' : 'rgba(255,255,255,0.1)'}; border-radius:12px; padding:20px; cursor:pointer; transition:all 0.3s;" onclick="selectRoom('${room.id}')">
                 <div style="font-size:20px; color:white; font-weight:600; margin-bottom:10px;">${room.name}</div>
-                <div style="display:flex; gap:15px; margin-bottom:15px; color:#888; font-size:14px;">
+                <div style="display:flex; gap:15px; margin-bottom:10px; color:#888; font-size:14px;">
                     <span>👥 ${room.playerCount}/${room.maxPlayers}</span>
                     <span>${room.type === 'private' ? '🔒' : '🌐'} ${room.type}</span>
+                </div>
+                <div style="margin-bottom:15px; padding:6px 10px; background:rgba(74,144,217,0.2); border-radius:6px; display:inline-block; font-size:13px; color:#88bbff;">
+                    🗺️ ${mapDisplay}
                 </div>
                 ${isFull ? 
                     '<div style="background:rgba(229,57,53,0.2); color:#e53935; padding:8px; border-radius:6px; text-align:center; font-size:14px; font-weight:600;">FULL</div>' :
@@ -920,6 +933,41 @@ const MINE_MODEL_URL = "https://files.catbox.moe/qmnt2u.glb";
 const SHIELD_BUBBLE_MODEL_URL = "https://files.catbox.moe/i5d8fc.glb"; // TODO: Replace with actual shield bubble model
 const KNOCKBACK_EXPLOSION_MODEL_URL = "https://files.catbox.moe/zcgdbt.glb"; // TODO: Replace with actual explosion model
 
+// ============ MAP SYSTEM ============
+// Map configurations - .babylon files for custom arenas
+// Each map has: url (babylon file), scaling, position offset, rotation
+const MAP_CONFIGS = {
+    'default': { 
+        url: null, // Uses default ground and walls
+        name: 'Default Arena',
+        icon: '🏟️',
+        scaling: [1, 1, 1],
+        offset: [0, 0, 0],
+        rotation: [0, 0, 0],
+        spawnY: 3 // Player spawn height
+    },
+    'tokyo': { 
+        url: 'https://files.catbox.moe/v6664x.babylon', // Local .babylon file
+        name: 'Little Tokyo',
+        icon: '🏯',
+        scaling: [0.05, 0.05, 0.05],
+        offset: [0, -5, 0],
+        rotation: [-Math.PI/2, 0, 0],
+        spawnY: 20
+    }
+};
+
+// Available maps for selection in UI
+const AVAILABLE_MAPS = Object.entries(MAP_CONFIGS).map(([id, config]) => ({
+    id: id,
+    name: config.name,
+    icon: config.icon
+}));
+
+// Currently loaded map
+let currentMapId = 'default';
+let loadedMapMeshes = []; // Store loaded map meshes for cleanup
+
 // Player Skin Models with custom transforms
 // rotation: [x, y, z] in radians, scaling: [x, y, z]
 // Use -1 as placeholder values to be configured later
@@ -1005,7 +1053,11 @@ const MODELS_TO_CACHE = [
     // Skin models (only add non-null skin URLs)
     ...Object.entries(SKIN_MODEL_URLS)
         .filter(([id, url]) => url !== null)
-        .map(([id, url]) => ({ name: 'skin_' + id, url: url }))
+        .map(([id, url]) => ({ name: 'skin_' + id, url: url })),
+    // Map models (only add non-null map URLs that are remote)
+    ...Object.entries(MAP_CONFIGS)
+        .filter(([id, config]) => config.url !== null && config.url.startsWith('http'))
+        .map(([id, config]) => ({ name: 'map_' + id, url: config.url }))
 ];
 
 // Cached blob URLs for instant loading
@@ -1158,6 +1210,212 @@ function loadCachedModel(modelName, scene, onSuccess, onError) {
 }
 
 // ============ HELPER FUNCTIONS ============
+
+// ============ MAP LOADING SYSTEM ============
+// Load a map by ID - handles cleanup of old map and loading new one
+function loadMap(mapId, targetScene) {
+    const mapConfig = MAP_CONFIGS[mapId];
+    if (!mapConfig) {
+        console.error('Map not found:', mapId);
+        return;
+    }
+    
+    console.log('Loading map:', mapId, mapConfig.name);
+    
+    // Cleanup previously loaded map meshes
+    loadedMapMeshes.forEach(mesh => {
+        if (mesh && !mesh.isDisposed()) {
+            if (mesh.physicsImpostor) {
+                mesh.physicsImpostor.dispose();
+            }
+            mesh.dispose();
+        }
+    });
+    loadedMapMeshes = [];
+    
+    // Handle default arena vs custom map
+    if (mapId === 'default' || !mapConfig.url) {
+        // Show default ground and walls
+        if (window.arenaGround) {
+            window.arenaGround.setEnabled(true);
+            if (!window.arenaGround.physicsImpostor || window.arenaGround.physicsImpostor.isDisposed) {
+                window.arenaGround.physicsImpostor = new BABYLON.PhysicsImpostor(
+                    window.arenaGround, BABYLON.PhysicsImpostor.MeshImpostor, 
+                    {mass: 0, restitution: 0.3}, targetScene
+                );
+            }
+        }
+        if (window.arenaWalls) {
+            window.arenaWalls.forEach(wall => {
+                if (!isHardcoreMode) {
+                    wall.setEnabled(true);
+                    if (!wall.physicsImpostor || wall.physicsImpostor.isDisposed) {
+                        wall.physicsImpostor = new BABYLON.PhysicsImpostor(
+                            wall, BABYLON.PhysicsImpostor.BoxImpostor, 
+                            {mass: 0, restitution: 0.9}, targetScene
+                        );
+                    }
+                }
+            });
+        }
+        currentMapId = 'default';
+        return;
+    }
+    
+    // Hide default ground and walls for custom maps
+    if (window.arenaGround) {
+        window.arenaGround.setEnabled(false);
+        if (window.arenaGround.physicsImpostor) {
+            window.arenaGround.physicsImpostor.dispose();
+        }
+    }
+    if (window.arenaWalls) {
+        window.arenaWalls.forEach(wall => {
+            wall.setEnabled(false);
+            if (wall.physicsImpostor) {
+                wall.physicsImpostor.dispose();
+            }
+        });
+    }
+    
+    // Apply transforms and physics to meshes
+    const applyMapTransforms = (meshes) => {
+        console.log('Applying transforms to map:', mapId, 'meshes:', meshes.length);
+        
+        meshes.forEach(mesh => {
+            // Skip non-mesh nodes (like TransformNodes)
+            if (!mesh.getBoundingInfo) {
+                console.log('Skipping non-mesh:', mesh.name);
+                return;
+            }
+            
+            // Mark as map mesh for filtering in raycasts
+            mesh.isMapMesh = true;
+            
+            // Disable picking to avoid raycast errors with complex geometry
+            mesh.isPickable = false;
+            
+            // Apply transforms from config
+            mesh.scaling = new BABYLON.Vector3(
+                mapConfig.scaling[0], 
+                mapConfig.scaling[1], 
+                mapConfig.scaling[2]
+            );
+            mesh.position.addInPlace(new BABYLON.Vector3(
+                mapConfig.offset[0],
+                mapConfig.offset[1],
+                mapConfig.offset[2]
+            ));
+            mesh.rotation = new BABYLON.Vector3(
+                mapConfig.rotation[0],
+                mapConfig.rotation[1],
+                mapConfig.rotation[2]
+            );
+            
+            // Only add physics to meshes with actual geometry
+            try {
+                if (mesh.getTotalVertices && mesh.getTotalVertices() > 0) {
+                    mesh.physicsImpostor = new BABYLON.PhysicsImpostor(
+                        mesh, BABYLON.PhysicsImpostor.MeshImpostor, 
+                        {mass: 0, restitution: 0.3}, targetScene
+                    );
+                }
+            } catch (e) {
+                console.warn('Failed to add physics to mesh:', mesh.name, e);
+            }
+            
+            // Store for cleanup
+            loadedMapMeshes.push(mesh);
+        });
+        
+        currentMapId = mapId;
+        console.log('Map ready:', mapConfig.name);
+    };
+    
+    // Check if map is preloaded (instant loading)
+    if (window.preloadedMapContainers && window.preloadedMapContainers[mapId]) {
+        console.log('Using preloaded map container:', mapId);
+        const container = window.preloadedMapContainers[mapId];
+        const instantiatedMeshes = container.instantiateModelsToScene().rootNodes
+            .flatMap(root => [root, ...root.getChildMeshes()]);
+        applyMapTransforms(instantiatedMeshes);
+        return;
+    }
+    
+    // Load custom map from URL
+    const loadMapModel = (url) => {
+        console.log('Loading map from URL:', url);
+        
+        // For .babylon files, we need to split the URL into rootUrl and filename
+        const lastSlash = url.lastIndexOf('/');
+        const rootUrl = url.substring(0, lastSlash + 1);
+        const sceneFile = url.substring(lastSlash + 1);
+        const pluginExt = url.endsWith('.babylon') ? ".babylon" : ".glb";
+        
+        console.log('Map loading - rootUrl:', rootUrl, 'sceneFile:', sceneFile, 'pluginExt:', pluginExt);
+        
+        BABYLON.SceneLoader.ImportMesh("", rootUrl, sceneFile, targetScene, function(meshes) {
+            console.log('Map meshes loaded:', meshes.length);
+            applyMapTransforms(meshes);
+        }, function(event) {
+            // Progress callback
+            if (event.lengthComputable) {
+                const percent = Math.round((event.loaded / event.total) * 100);
+                console.log('Map loading progress:', percent + '%');
+            }
+        }, function(scene, message, exception) {
+            console.error('Failed to load map:', mapId, message, exception);
+            // Fallback to default arena
+            loadMap('default', targetScene);
+        }, pluginExt);
+    };
+    
+    // Check if map is cached (for remote URLs)
+    const cachedUrl = getCachedModelUrl('map_' + mapId);
+    if (cachedUrl && isCachedBlobUrl(cachedUrl)) {
+        // For blob URLs, use them directly
+        console.log('Loading map from cached blob:', cachedUrl);
+        const pluginExt = mapConfig.url.endsWith('.babylon') ? ".babylon" : ".glb";
+        BABYLON.SceneLoader.ImportMesh("", cachedUrl, "", targetScene, function(meshes) {
+            applyMapTransforms(meshes);
+        }, null, function(scene, message, exception) {
+            console.error('Failed to load cached map:', mapId, message, exception);
+            loadMap('default', targetScene);
+        }, pluginExt);
+    } else {
+        // Load directly from URL
+        loadMapModel(mapConfig.url);
+    }
+}
+
+// Preload a map for instant switching (call before game starts)
+async function preloadMap(mapId, targetScene) {
+    return new Promise((resolve, reject) => {
+        const mapConfig = MAP_CONFIGS[mapId];
+        if (!mapConfig || !mapConfig.url) {
+            resolve(null);
+            return;
+        }
+        
+        // For local .babylon files, we can preload them
+        const cachedUrl = getCachedModelUrl('map_' + mapId);
+        const url = cachedUrl || mapConfig.url;
+        const pluginExt = url.endsWith('.babylon') ? ".babylon" : ".glb";
+        
+        BABYLON.SceneLoader.ImportMesh("", "", url, targetScene, function(meshes) {
+            // Hide preloaded meshes immediately
+            meshes.forEach(mesh => {
+                mesh.setEnabled(false);
+                mesh.isPickable = false;
+            });
+            console.log('Preloaded map:', mapId);
+            resolve(meshes);
+        }, null, function(scene, message, exception) {
+            console.warn('Failed to preload map:', mapId, message);
+            resolve(null);
+        }, pluginExt);
+    });
+}
 
 // Reset player arms to default idle position
 function resetPlayerArms() {
@@ -1701,6 +1959,9 @@ var createScene = function () {
     ground.material = groundmat;
     ground.physicsImpostor = new BABYLON.PhysicsImpostor(ground, BABYLON.PhysicsImpostor.MeshImpostor, {mass:0, restitution:0.3}, scene);
     
+    // Store ground globally for map system control
+    window.arenaGround = ground;
+    
     var wallz = [15, 0, 0, -15];
     var wallrot = [0, 1, 1, 0];
     var wallx = [null, -15, 15, null];
@@ -1792,7 +2053,8 @@ var createScene = function () {
             var vel = playerPhysicsBody.physicsImpostor.getLinearVelocity();
             var groundRay = new BABYLON.Ray(playerPhysicsBody.position, new BABYLON.Vector3(0, -1, 0), 1.1);
             var groundHit = scene.pickWithRay(groundRay, function (mesh) {
-                return mesh !== playerPhysicsBody && 
+                return mesh.isPickable && 
+                       mesh !== playerPhysicsBody && 
                        !mesh.name.startsWith("player") && 
                        mesh.name !== "skybox" &&
                        mesh.name !== "front";
@@ -2020,7 +2282,8 @@ var createScene = function () {
             // Auto-crouch while charging (same as shift)
             var ray = new BABYLON.Ray(playerPhysicsBody.position, new BABYLON.Vector3(0, -1, 0), 1.1);
             var hit = scene.pickWithRay(ray, function (mesh) {
-                return mesh !== playerPhysicsBody && 
+                return mesh.isPickable && 
+                       mesh !== playerPhysicsBody && 
                        !mesh.name.startsWith("player") && 
                        mesh.name !== "skybox" &&
                        mesh.name !== "front";
@@ -3239,7 +3502,8 @@ function handleMovement() {
         var ray = new BABYLON.Ray(playerPhysicsBody.position, new BABYLON.Vector3(0, -1, 0), 1.1);
         var hit = scene.pickWithRay(ray, function (mesh) {
             // Exclude player physics body and all player visual mesh parts (names start with "player")
-            return mesh !== playerPhysicsBody && 
+            return mesh.isPickable && 
+                   mesh !== playerPhysicsBody && 
                    !mesh.name.startsWith("player") && 
                    mesh.name !== "skybox" &&
                    mesh.name !== "front";
@@ -3300,7 +3564,7 @@ async function preloadModels() {
     
     function updateLoadingProgress(modelName, success) {
         loadedCount++;
-        const progress = 50 + Math.round((loadedCount / totalModels) * 50); // Second 50% for loading
+        const progress = 50 + Math.round((loadedCount / totalModels) * 40); // 40% for models
         
         if (loadingBar) loadingBar.style.width = progress + "%";
         if (loadingPercent) loadingPercent.textContent = progress + "%";
@@ -3311,26 +3575,9 @@ async function preloadModels() {
         console.log(`Loading progress: ${loadedCount}/${totalModels} (${progress}%) - ${modelName}`);
         
         if (loadedCount >= totalModels) {
-            onAllModelsLoaded();
+            // After models, preload maps
+            preloadMaps();
         }
-    }
-    
-    function onAllModelsLoaded() {
-        console.log("All models loaded!");
-        modelsLoaded = true;
-        
-        if (loadingText) loadingText.textContent = "Ready!";
-        
-        // Fade out loading screen after a brief moment
-        setTimeout(() => {
-            if (loadingScreen) {
-                loadingScreen.style.transition = "opacity 0.5s ease";
-                loadingScreen.style.opacity = "0";
-                setTimeout(() => {
-                    loadingScreen.style.display = "none";
-                }, 500);
-            }
-        }, 300);
     }
     
     // Load all models using cached URLs
@@ -3356,6 +3603,88 @@ async function preloadModels() {
             pluginExtension
         );
     });
+}
+
+// Preload local .babylon maps for instant switching
+async function preloadMaps() {
+    console.log("Preloading maps...");
+    if (loadingText) loadingText.textContent = "Loading maps...";
+    
+    // Get maps with local .babylon files (not remote URLs)
+    const localMaps = Object.entries(MAP_CONFIGS)
+        .filter(([id, config]) => config.url && !config.url.startsWith('http'))
+        .map(([id, config]) => ({ id, ...config }));
+    
+    let loadedMaps = 0;
+    const totalMaps = localMaps.length;
+    
+    function onMapLoadComplete() {
+        loadedMaps++;
+        const progress = 90 + Math.round((loadedMaps / Math.max(totalMaps, 1)) * 10);
+        
+        if (loadingBar) loadingBar.style.width = progress + "%";
+        if (loadingPercent) loadingPercent.textContent = progress + "%";
+        
+        if (loadedMaps >= totalMaps) {
+            onAllAssetsLoaded();
+        }
+    }
+    
+    if (localMaps.length === 0) {
+        onAllAssetsLoaded();
+        return;
+    }
+    
+    // Preload each local map
+    localMaps.forEach(map => {
+        console.log(`Preloading map: ${map.name} (${map.url})`);
+        
+        BABYLON.SceneLoader.LoadAssetContainer("", map.url, scene,
+            function(container) {
+                console.log(`Map ${map.name} preloaded successfully`);
+                // Store container for instant instantiation later
+                window.preloadedMapContainers = window.preloadedMapContainers || {};
+                window.preloadedMapContainers[map.id] = container;
+                onMapLoadComplete();
+            },
+            null,
+            function(scene, message, exception) {
+                console.warn(`Failed to preload map ${map.name}:`, message);
+                onMapLoadComplete();
+            },
+            ".babylon"
+        );
+    });
+}
+
+function onAllAssetsLoaded() {
+    console.log("All assets loaded!");
+    modelsLoaded = true;
+    
+    if (loadingText) loadingText.textContent = "Ready!";
+    
+    // Load pending map if one was received before scene was ready
+    if (pendingMapId && pendingMapId !== currentMapId) {
+        console.log('Loading pending map:', pendingMapId);
+        loadMap(pendingMapId, scene);
+        const mapConfig = MAP_CONFIGS[pendingMapId];
+        if (mapConfig && mapConfig.spawnY && playerPhysicsBody) {
+            playerPhysicsBody.position.y = mapConfig.spawnY;
+            if (player) player.position.y = mapConfig.spawnY;
+        }
+        pendingMapId = null;
+    }
+    
+    // Fade out loading screen after a brief moment
+    setTimeout(() => {
+        if (loadingScreen) {
+            loadingScreen.style.transition = "opacity 0.5s ease";
+            loadingScreen.style.opacity = "0";
+            setTimeout(() => {
+                loadingScreen.style.display = "none";
+            }, 500);
+        }
+    }, 300);
 }
 
 // Initialize game on startup (cache first, then scene)
@@ -3700,34 +4029,72 @@ socket.on('currentPlayers', (players) => {
     });
 });
 
-// Room settings (hardcore mode, etc.)
+// Room settings (hardcore mode, map, etc.)
 let isHardcoreMode = false;
+let pendingMapId = null; // Store map ID if scene isn't ready yet
+
 socket.on('roomSettings', (settings) => {
     console.log('Room settings received:', settings);
     isHardcoreMode = settings.hardcoreMode;
     
-    // Toggle wall visibility and physics based on hardcore mode
-    if (window.arenaWalls) {
-        window.arenaWalls.forEach(wall => {
-            if (isHardcoreMode) {
-                // Hide walls and disable physics
-                wall.setEnabled(false);
-                if (wall.physicsImpostor) {
-                    wall.physicsImpostor.setMass(0);
-                    wall.physicsImpostor.dispose();
-                }
-            } else {
-                // Show walls and restore physics
-                wall.setEnabled(true);
-                if (!wall.physicsImpostor || wall.physicsImpostor.isDisposed) {
-                    wall.physicsImpostor = new BABYLON.PhysicsImpostor(wall, BABYLON.PhysicsImpostor.BoxImpostor, {mass:0, restitution: 0.9}, scene);
-                }
-            }
-        });
+    // Load map if specified
+    const mapId = settings.mapId || 'default';
+    console.log('Map ID from settings:', mapId, 'Current map:', currentMapId);
+    
+    // Check if scene is ready
+    if (!scene) {
+        console.log('Scene not ready yet, storing pending map:', mapId);
+        pendingMapId = mapId;
+        return;
     }
     
-    // Show notification about mode
-    if (settings.hardcoreMode) {
+    if (mapId !== currentMapId) {
+        console.log('Loading new map:', mapId);
+        loadMap(mapId, scene);
+        
+        // Show notification about map change
+        const mapConfig = MAP_CONFIGS[mapId];
+        if (mapConfig && mapId !== 'default') {
+            Swal.fire({
+                icon: 'info',
+                title: `${mapConfig.icon} ${mapConfig.name}`,
+                text: 'Custom map loaded!',
+                timer: 2500,
+                showConfirmButton: false,
+                background: '#1a1a2e',
+                color: '#fff'
+            });
+        }
+        
+        // Adjust player spawn height based on map
+        if (mapConfig && mapConfig.spawnY && playerPhysicsBody) {
+            playerPhysicsBody.position.y = mapConfig.spawnY;
+            if (player) player.position.y = mapConfig.spawnY;
+        }
+    } else if (mapId === 'default') {
+        // For default map, handle wall visibility based on hardcore mode
+        if (window.arenaWalls) {
+            window.arenaWalls.forEach(wall => {
+                if (isHardcoreMode) {
+                    // Hide walls and disable physics
+                    wall.setEnabled(false);
+                    if (wall.physicsImpostor) {
+                        wall.physicsImpostor.setMass(0);
+                        wall.physicsImpostor.dispose();
+                    }
+                } else {
+                    // Show walls and restore physics
+                    wall.setEnabled(true);
+                    if (!wall.physicsImpostor || wall.physicsImpostor.isDisposed) {
+                        wall.physicsImpostor = new BABYLON.PhysicsImpostor(wall, BABYLON.PhysicsImpostor.BoxImpostor, {mass:0, restitution: 0.9}, scene);
+                    }
+                }
+            });
+        }
+    }
+    
+    // Show notification about hardcore mode (only for default map)
+    if (settings.hardcoreMode && mapId === 'default') {
         Swal.fire({
             icon: 'warning',
             title: '☠️ HARDCORE MODE',
