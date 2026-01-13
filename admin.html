@@ -557,6 +557,7 @@
                         <label>🗺️ Map</label>
                         <select id="roomMap">
                             <option value="default">🏟️ Default Arena</option>
+                            <option value="complex">🏗️ Complex Arena</option>
                             <option value="tokyo">🏯 Little Tokyo</option>
                             <option value="plaza">🏖️ Sunny Plaza</option>
                             <option value="forest">🌲 Forest</option>
@@ -820,6 +821,7 @@
         // Map display names
         const mapNames = {
             'default': '🏟️ Default',
+            'complex': '🏗️ Complex',
             'tokyo': '🏯 Tokyo',
             'plaza': '🏖️ Sunny Plaza',
             'forest': '🌲 Forest'
@@ -941,6 +943,7 @@
         function changeMap(roomId) {
             const mapOptions = {
                 'default': '🏟️ Default Arena',
+                'complex': '🏗️ Complex Arena',
                 'tokyo': '🏯 Little Tokyo',
                 'plaza': '🏖️ Sunny Plaza',
                 'forest': '🌲 Forest'

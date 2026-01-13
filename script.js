@@ -551,7 +551,8 @@ function renderRoomsList() {
         'default': '🏟️ Default Arena',
         'tokyo': '🏯 Little Tokyo',
         'plaza': '🏖️ Sunny Plaza',
-        'forest': '🌲 Enchanted Forest'
+        'forest': '🌲 Enchanted Forest',
+        'complex': '🏗️ Complex Arena'
     };
     
     roomsList.innerHTML = availableRooms.map(room => {
@@ -976,6 +977,17 @@ const MAP_CONFIGS = {
         rotation: [-Math.PI/2, 0, 0],
         spawnY: 40,
         groundY: 0
+    },
+    'complex': {
+        url: null, // Uses primitive-based map
+        name: 'Complex Arena',
+        icon: '🏗️',
+        scaling: [1, 1, 1],
+        offset: [0, 0, 0],
+        rotation: [0, 0, 0],
+        spawnY: 8, // Spawn on top of central tower
+        groundY: 0,
+        isPrimitive: true // Flag to indicate this uses primitives
     }
 };
 
@@ -1255,8 +1267,13 @@ function loadMap(mapId, targetScene) {
     });
     loadedMapMeshes = [];
     
-    // Handle default arena vs custom map
-    if (mapId === 'default' || !mapConfig.url) {
+    // Always destroy complex map elements when switching maps
+    if (window.destroyComplexMap) {
+        window.destroyComplexMap();
+    }
+    
+    // Handle default arena (plain ground + walls)
+    if (mapId === 'default') {
         // Show default ground and walls
         if (window.arenaGround) {
             window.arenaGround.setEnabled(true);
@@ -1284,7 +1301,41 @@ function loadMap(mapId, targetScene) {
         return;
     }
     
-    // Hide default ground and walls for custom maps
+    // Handle complex primitive map
+    if (mapId === 'complex' && mapConfig.isPrimitive) {
+        // Show default ground and walls (complex map uses the same base)
+        if (window.arenaGround) {
+            window.arenaGround.setEnabled(true);
+            if (!window.arenaGround.physicsImpostor || window.arenaGround.physicsImpostor.isDisposed) {
+                window.arenaGround.physicsImpostor = new BABYLON.PhysicsImpostor(
+                    window.arenaGround, BABYLON.PhysicsImpostor.MeshImpostor, 
+                    {mass: 0, restitution: 0.3}, targetScene
+                );
+            }
+        }
+        if (window.arenaWalls) {
+            window.arenaWalls.forEach(wall => {
+                if (!isHardcoreMode) {
+                    wall.setEnabled(true);
+                    if (!wall.physicsImpostor || wall.physicsImpostor.isDisposed) {
+                        wall.physicsImpostor = new BABYLON.PhysicsImpostor(
+                            wall, BABYLON.PhysicsImpostor.BoxImpostor, 
+                            {mass: 0, restitution: 0.9}, targetScene
+                        );
+                    }
+                }
+            });
+        }
+        // Create the complex map elements
+        if (window.createComplexMap) {
+            window.createComplexMap(targetScene);
+        }
+        currentMapId = 'complex';
+        console.log('Complex arena loaded with primitives');
+        return;
+    }
+    
+    // For external URL maps, hide default ground and walls
     if (window.arenaGround) {
         window.arenaGround.setEnabled(false);
         if (window.arenaGround.physicsImpostor) {
@@ -2005,6 +2056,213 @@ var createScene = function () {
     
     // Store walls globally for hardcore mode toggle
     window.arenaWalls = walls;
+
+    // ========== COMPLEX MAP WITH PRIMITIVES ==========
+    // Store all map elements for potential toggling
+    window.complexMapElements = [];
+    
+    // Create complex map function - called when complex map is selected
+    window.createComplexMap = function(targetScene) {
+        // Clean up existing complex map elements
+        if (window.complexMapElements) {
+            window.complexMapElements.forEach(mesh => {
+                if (mesh && !mesh.isDisposed()) {
+                    if (mesh.physicsImpostor) mesh.physicsImpostor.dispose();
+                    mesh.dispose();
+                }
+            });
+        }
+        window.complexMapElements = [];
+        
+        // Materials for map elements
+        var stoneMat = new BABYLON.StandardMaterial("stoneMat", targetScene);
+        stoneMat.diffuseColor = new BABYLON.Color3(0.5, 0.5, 0.55);
+        stoneMat.specularColor = new BABYLON.Color3(0.2, 0.2, 0.2);
+        
+        var metalMat = new BABYLON.StandardMaterial("metalMat", targetScene);
+        metalMat.diffuseColor = new BABYLON.Color3(0.7, 0.7, 0.75);
+        metalMat.specularColor = new BABYLON.Color3(0.8, 0.8, 0.8);
+        metalMat.specularPower = 64;
+        
+        var redMat = new BABYLON.StandardMaterial("redMat", targetScene);
+        redMat.diffuseColor = new BABYLON.Color3(0.8, 0.2, 0.2);
+        redMat.emissiveColor = new BABYLON.Color3(0.2, 0.05, 0.05);
+        
+        var blueMat = new BABYLON.StandardMaterial("blueMat", targetScene);
+        blueMat.diffuseColor = new BABYLON.Color3(0.2, 0.3, 0.8);
+        blueMat.emissiveColor = new BABYLON.Color3(0.05, 0.08, 0.2);
+        
+        var greenMat = new BABYLON.StandardMaterial("greenMat", targetScene);
+        greenMat.diffuseColor = new BABYLON.Color3(0.2, 0.7, 0.3);
+        greenMat.emissiveColor = new BABYLON.Color3(0.05, 0.15, 0.08);
+        
+        var yellowMat = new BABYLON.StandardMaterial("yellowMat", targetScene);
+        yellowMat.diffuseColor = new BABYLON.Color3(0.9, 0.8, 0.2);
+        yellowMat.emissiveColor = new BABYLON.Color3(0.2, 0.18, 0.05);
+        
+        var purpleMat = new BABYLON.StandardMaterial("purpleMat", targetScene);
+        purpleMat.diffuseColor = new BABYLON.Color3(0.6, 0.2, 0.8);
+        purpleMat.emissiveColor = new BABYLON.Color3(0.15, 0.05, 0.2);
+        
+        var slideMat = new BABYLON.StandardMaterial("slideMat", targetScene);
+        slideMat.diffuseColor = new BABYLON.Color3(0.3, 0.6, 0.9);
+        slideMat.specularColor = new BABYLON.Color3(0.9, 0.9, 0.9);
+        slideMat.specularPower = 128;
+        slideMat.alpha = 0.85;
+        
+        // Helper function to create a map element with physics
+        function createMapBox(name, width, height, depth, x, y, z, mat, rotY = 0, rotX = 0, rotZ = 0) {
+            var box = BABYLON.MeshBuilder.CreateBox(name, {width: width, height: height, depth: depth}, targetScene);
+            box.position.set(x, y, z);
+            box.rotation.set(rotX, rotY, rotZ);
+            box.material = mat;
+            box.physicsImpostor = new BABYLON.PhysicsImpostor(box, BABYLON.PhysicsImpostor.BoxImpostor, {mass: 0, restitution: 0.3, friction: 0.5}, targetScene);
+            window.complexMapElements.push(box);
+            return box;
+        }
+        
+        function createMapCylinder(name, diameter, height, x, y, z, mat) {
+            var cyl = BABYLON.MeshBuilder.CreateCylinder(name, {diameter: diameter, height: height, tessellation: 24}, targetScene);
+            cyl.position.set(x, y, z);
+            cyl.material = mat;
+            cyl.physicsImpostor = new BABYLON.PhysicsImpostor(cyl, BABYLON.PhysicsImpostor.CylinderImpostor, {mass: 0, restitution: 0.3, friction: 0.5}, targetScene);
+            window.complexMapElements.push(cyl);
+            return cyl;
+        }
+        
+        function createMapSphere(name, diameter, x, y, z, mat) {
+            var sphere = BABYLON.MeshBuilder.CreateSphere(name, {diameter: diameter, segments: 16}, targetScene);
+            sphere.position.set(x, y, z);
+            sphere.material = mat;
+            sphere.physicsImpostor = new BABYLON.PhysicsImpostor(sphere, BABYLON.PhysicsImpostor.SphereImpostor, {mass: 0, restitution: 0.3, friction: 0.5}, targetScene);
+            window.complexMapElements.push(sphere);
+            return sphere;
+        }
+        
+        // ===== CENTRAL TOWER STRUCTURE =====
+        createMapCylinder("centralPillar", 3, 6, 0, 3, 0, stoneMat);
+        createMapBox("centralTop", 6, 0.5, 6, 0, 6.25, 0, metalMat);
+        
+        // ===== CORNER ELEVATED PLATFORMS =====
+        createMapBox("neStep1", 4, 1, 4, 10, 0.5, 10, redMat);
+        createMapBox("neStep2", 3, 1, 3, 11, 1.5, 11, redMat);
+        createMapBox("neStep3", 2.5, 1, 2.5, 11.5, 2.5, 11.5, redMat);
+        
+        createMapCylinder("seTower1", 2.5, 4, 10, 2, -10, blueMat);
+        createMapCylinder("seTower2", 2, 6, 12, 3, -12, blueMat);
+        createMapBox("seBridge", 5, 0.3, 1.5, 11, 4.5, -11, metalMat, Math.PI/4);
+        
+        createMapBox("swPlatform", 6, 2, 6, -10, 1, -10, greenMat);
+        createMapBox("swRim1", 6.5, 0.5, 0.5, -10, 2.25, -7, greenMat);
+        createMapBox("swRim2", 6.5, 0.5, 0.5, -10, 2.25, -13, greenMat);
+        createMapBox("swRim3", 0.5, 0.5, 5.5, -7, 2.25, -10, greenMat);
+        createMapBox("swRim4", 0.5, 0.5, 5.5, -13, 2.25, -10, greenMat);
+        
+        createMapBox("nwBase", 7, 0.8, 7, -10, 0.4, 10, yellowMat);
+        createMapBox("nwMid", 5, 0.8, 5, -10, 1.2, 10, yellowMat);
+        createMapBox("nwTop", 3, 0.8, 3, -10, 2.0, 10, yellowMat);
+        createMapBox("nwPeak", 1.5, 0.8, 1.5, -10, 2.8, 10, yellowMat);
+        
+        // ===== SLIDES (low friction for sliding) =====
+        var slideNorth = createMapBox("slideNorth", 2.5, 0.2, 8, 0, 3.5, 8, slideMat, 0, 0.4, 0);
+        slideNorth.physicsImpostor.dispose();
+        slideNorth.physicsImpostor = new BABYLON.PhysicsImpostor(slideNorth, BABYLON.PhysicsImpostor.BoxImpostor, {mass: 0, restitution: 0.1, friction: 0.05}, targetScene);
+        
+        var slideSouth1 = createMapBox("slideSouth1", 2.5, 0.2, 4, 0, 5, -4, slideMat, 0, 0.3, 0);
+        slideSouth1.physicsImpostor.dispose();
+        slideSouth1.physicsImpostor = new BABYLON.PhysicsImpostor(slideSouth1, BABYLON.PhysicsImpostor.BoxImpostor, {mass: 0, restitution: 0.1, friction: 0.05}, targetScene);
+        var slideSouth2 = createMapBox("slideSouth2", 2.5, 0.2, 4, 0, 3.5, -7.5, slideMat, 0, 0.5, 0);
+        slideSouth2.physicsImpostor.dispose();
+        slideSouth2.physicsImpostor = new BABYLON.PhysicsImpostor(slideSouth2, BABYLON.PhysicsImpostor.BoxImpostor, {mass: 0, restitution: 0.1, friction: 0.05}, targetScene);
+        var slideSouth3 = createMapBox("slideSouth3", 2.5, 0.2, 3, 0, 1.5, -10.5, slideMat, 0, 0.7, 0);
+        slideSouth3.physicsImpostor.dispose();
+        slideSouth3.physicsImpostor = new BABYLON.PhysicsImpostor(slideSouth3, BABYLON.PhysicsImpostor.BoxImpostor, {mass: 0, restitution: 0.1, friction: 0.05}, targetScene);
+        
+        var slideE1 = createMapBox("slideE1", 3, 0.2, 3, 5, 5.5, 0, slideMat, 0.3, 0.35, 0);
+        slideE1.physicsImpostor.dispose();
+        slideE1.physicsImpostor = new BABYLON.PhysicsImpostor(slideE1, BABYLON.PhysicsImpostor.BoxImpostor, {mass: 0, restitution: 0.1, friction: 0.05}, targetScene);
+        var slideE2 = createMapBox("slideE2", 3, 0.2, 3, 7, 4.2, 2, slideMat, 0.6, 0.4, 0);
+        slideE2.physicsImpostor.dispose();
+        slideE2.physicsImpostor = new BABYLON.PhysicsImpostor(slideE2, BABYLON.PhysicsImpostor.BoxImpostor, {mass: 0, restitution: 0.1, friction: 0.05}, targetScene);
+        var slideE3 = createMapBox("slideE3", 3, 0.2, 3, 9, 2.8, 4, slideMat, 0.9, 0.45, 0);
+        slideE3.physicsImpostor.dispose();
+        slideE3.physicsImpostor = new BABYLON.PhysicsImpostor(slideE3, BABYLON.PhysicsImpostor.BoxImpostor, {mass: 0, restitution: 0.1, friction: 0.05}, targetScene);
+        var slideE4 = createMapBox("slideE4", 3, 0.2, 3, 10, 1.3, 7, slideMat, 1.2, 0.5, 0);
+        slideE4.physicsImpostor.dispose();
+        slideE4.physicsImpostor = new BABYLON.PhysicsImpostor(slideE4, BABYLON.PhysicsImpostor.BoxImpostor, {mass: 0, restitution: 0.1, friction: 0.05}, targetScene);
+        
+        // ===== RAMPS FOR ELEVATION CHANGES =====
+        createMapBox("westRamp", 3, 0.3, 8, -6, 3, 0, metalMat, 0, 0, 0.42);
+        createMapBox("eastRamp", 2.5, 0.3, 6, 6, 2.5, 3, stoneMat, 0.5, 0, 0.55);
+        
+        // ===== FLOATING PLATFORMS (jump challenges) =====
+        createMapBox("float1", 2, 0.4, 2, 5, 3, -5, purpleMat);
+        createMapBox("float2", 1.8, 0.4, 1.8, 7, 4, -7, purpleMat);
+        createMapBox("float3", 1.5, 0.4, 1.5, 9, 5, -5, purpleMat);
+        createMapBox("float4", 2, 0.4, 2, 8, 6.5, -2, purpleMat);
+        
+        // ===== TUNNEL / UNDERPASS =====
+        createMapBox("tunnelWall1", 0.3, 2, 8, -4, 1, 6, stoneMat);
+        createMapBox("tunnelWall2", 0.3, 2, 8, -2, 1, 6, stoneMat);
+        createMapBox("tunnelRoof", 2.3, 0.3, 8, -3, 2, 6, stoneMat);
+        
+        // ===== OBSTACLE PILLARS =====
+        createMapCylinder("pillar1", 1, 3, 4, 1.5, 0, stoneMat);
+        createMapCylinder("pillar2", 1, 3, -4, 1.5, 0, stoneMat);
+        createMapCylinder("pillar3", 0.8, 2.5, 0, 1.25, 6, stoneMat);
+        createMapCylinder("pillar4", 0.8, 2.5, 0, 1.25, -6, stoneMat);
+        
+        // ===== DECORATIVE SPHERES (obstacles) =====
+        createMapSphere("sphere1", 1.5, -6, 0.75, -5, redMat);
+        createMapSphere("sphere2", 1.2, 6, 0.6, 5, blueMat);
+        createMapSphere("sphere3", 1.8, -5, 0.9, 5, greenMat);
+        
+        // ===== BRIDGE CONNECTING CORNERS =====
+        createMapBox("bridgeN1", 3, 0.4, 2, -5, 3.5, 11, metalMat);
+        createMapBox("bridgeN2", 3, 0.4, 2, 0, 4, 11, metalMat);
+        createMapBox("bridgeN3", 3, 0.4, 2, 5, 3.5, 11, metalMat);
+        createMapCylinder("bridgeSupport1", 0.5, 7, -5, 1.75, 11, stoneMat);
+        createMapCylinder("bridgeSupport2", 0.5, 8, 0, 2, 11, stoneMat);
+        createMapCylinder("bridgeSupport3", 0.5, 7, 5, 1.75, 11, stoneMat);
+        
+        // ===== HALF-PIPE / BOWL AREA =====
+        createMapBox("bowl1", 6, 0.3, 4, -8, 0.8, 0, stoneMat, 0, 0, -0.4);
+        createMapBox("bowl2", 6, 0.3, 4, 8, 0.8, 0, stoneMat, 0, 0, 0.4);
+        
+        // ===== STAIRCASE =====
+        for (let i = 0; i < 6; i++) {
+            createMapBox("stair" + i, 2, 0.3, 1, 12 - i * 0.5, 0.3 + i * 0.5, -3 - i, stoneMat);
+        }
+        
+        // ===== LOW COVER WALLS =====
+        createMapBox("cover1", 3, 1, 0.4, 3, 0.5, 8, stoneMat);
+        createMapBox("cover2", 3, 1, 0.4, -3, 0.5, -8, stoneMat);
+        createMapBox("cover3", 0.4, 1, 3, 8, 0.5, 3, stoneMat);
+        createMapBox("cover4", 0.4, 1, 3, -8, 0.5, -3, stoneMat);
+        
+        // ===== ELEVATED RING AROUND CENTER =====
+        createMapBox("ring1", 8, 0.5, 1.5, 0, 1.5, 5, metalMat);
+        createMapBox("ring2", 8, 0.5, 1.5, 0, 1.5, -5, metalMat);
+        createMapBox("ring3", 1.5, 0.5, 7, 5, 1.5, 0, metalMat);
+        createMapBox("ring4", 1.5, 0.5, 7, -5, 1.5, 0, metalMat);
+        
+        console.log('Complex map created with', window.complexMapElements.length, 'elements');
+    };
+    
+    // Function to destroy complex map elements
+    window.destroyComplexMap = function() {
+        if (window.complexMapElements) {
+            window.complexMapElements.forEach(mesh => {
+                if (mesh && !mesh.isDisposed()) {
+                    if (mesh.physicsImpostor) mesh.physicsImpostor.dispose();
+                    mesh.dispose();
+                }
+            });
+            window.complexMapElements = [];
+        }
+    };
+    
+    // ========== END OF COMPLEX MAP DEFINITION ==========
 
     // Skybox gradient
     var bluemat = new BABYLON.StandardMaterial("bluemat", scene);
