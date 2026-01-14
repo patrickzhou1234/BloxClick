@@ -988,6 +988,23 @@ const CLOTH_BLIND_DURATION = 10000; // 4 seconds of blindness
 const CLOTH_SIZE = 3; // Size of the cloth
 const CLOTH_TEXTURE_URL = "https://upload.wikimedia.org/wikipedia/commons/2/2a/VichyKaro.png";
 
+// Grapple Hook state (exclusive to Patrick skin)
+let isChargingGrapple = false;
+let grappleCharge = 0;
+let grappleChargingMesh = null;
+let isGrappling = false;
+let grappleHookMesh = null;
+let grappleRopeMesh = null;
+let grappleTarget = null;
+let grappleTargetType = null; // 'object' or 'player'
+let grappleTargetPlayerId = null;
+const GRAPPLE_CHARGE_TIME = 2000; // 2 seconds to fully charge (same as cloth)
+const GRAPPLE_CHARGE_RATE = 100 / (GRAPPLE_CHARGE_TIME / 16.67);
+const GRAPPLE_RANGE = 30; // Maximum hook distance
+const GRAPPLE_HOOK_SPEED = 1.5; // Hook travel speed per frame
+const GRAPPLE_PULL_SPEED = 0.8; // Retraction speed
+const GRAPPLE_RELEASE_DISTANCE = 2.0; // Auto-release when within this distance
+
 // Preloaded 3D models
 const DRONE_MODEL_URL = "https://files.catbox.moe/z7hxt9.glb";
 const ULTIMATE_MODEL_URL = "https://files.catbox.moe/84ufxa.glb";
@@ -3108,6 +3125,61 @@ var createScene = function () {
             }
         }
         
+        // Grapple charging (Patrick skin only)
+        if (isChargingGrapple && !isDead && !isDroneMode && selectedSkin === 'patrick') {
+            grappleCharge = Math.min(grappleCharge + GRAPPLE_CHARGE_RATE, 100);
+            
+            // Right arm forward while charging (like holding a rope)
+            if (player.leftArm && player.rightArm) {
+                player.rightArm.rotation.x = -1.4;
+                player.rightArm.rotation.z = 0;
+            }
+            
+            // Create or update charging visual (hook preview)
+            if (!grappleChargingMesh) {
+                grappleChargingMesh = BABYLON.MeshBuilder.CreateCylinder("grappleCharging", {
+                    height: 0.3,
+                    diameterTop: 0.05,
+                    diameterBottom: 0.15,
+                    tessellation: 8
+                }, scene);
+                const chargeMat = new BABYLON.StandardMaterial("grappleChargeMat", scene);
+                chargeMat.diffuseColor = new BABYLON.Color3(0.5, 0.5, 0.5);
+                chargeMat.emissiveColor = new BABYLON.Color3(0.2, 0.2, 0.2);
+                chargeMat.specularColor = new BABYLON.Color3(0.8, 0.8, 0.8);
+                grappleChargingMesh.material = chargeMat;
+            }
+            
+            // Scale and glow based on charge
+            const chargePercent = grappleCharge / 100;
+            grappleChargingMesh.scaling.setAll(0.5 + chargePercent * 0.5);
+            grappleChargingMesh.material.emissiveColor = new BABYLON.Color3(
+                0.2 + chargePercent * 0.3, 
+                0.2 + chargePercent * 0.3, 
+                0.2 + chargePercent * 0.3
+            );
+            
+            // Position in front of player's right hand
+            var lookDir = camera.getDirection(new BABYLON.Vector3(0, 0, 1));
+            var hookPos = playerPhysicsBody.position.add(lookDir.scale(1.5));
+            hookPos.y += 0.5;
+            grappleChargingMesh.position.copyFrom(hookPos);
+            grappleChargingMesh.rotation.x = Math.PI / 2; // Point forward
+            
+            const grappleBar = document.getElementById('grappleBar');
+            if (grappleBar) grappleBar.style.width = grappleCharge + '%';
+            
+            const grappleContainer = document.getElementById('grappleContainer');
+            if (grappleContainer) grappleContainer.style.display = 'block';
+            
+            currentAnimState = 'charging';
+            
+            // Fire when fully charged
+            if (grappleCharge >= 100) {
+                fireGrapple();
+            }
+        }
+        
         // Drone mode controls
         if (isDroneMode && droneMesh && droneCamera) {
             // Drone movement with WASD
@@ -3227,6 +3299,7 @@ var createScene = function () {
                         grenadeChargeLevel: isChargingGrenade ? grenadeCharge : 0,
                         droneChargeLevel: isChargingDrone ? droneCharge : 0,
                         clothChargeLevel: isChargingCloth ? clothCharge : 0,
+                        grappleChargeLevel: isChargingGrapple ? grappleCharge : 0,
                         isDroneMode: isDroneMode,
                         droneX: droneMesh ? droneMesh.position.x : 0,
                         droneY: droneMesh ? droneMesh.position.y : 0,
@@ -3262,6 +3335,14 @@ var createScene = function () {
         // Exit drone mode if in it
         if (isDroneMode) {
             window.exitDrone();
+        }
+        
+        // Cancel grapple if charging or active
+        if (isChargingGrapple) {
+            window.cancelGrapple();
+        }
+        if (isGrappling) {
+            window.releaseGrapple();
         }
         
         // Notify other players that we died (hide our character on their screens)
@@ -4103,6 +4184,363 @@ var createScene = function () {
         }
     };
     
+    // ============ PATRICK GRAPPLE HOOK ABILITY ============
+    
+    // Start charging grapple (Patrick skin only)
+    window.startChargingGrapple = function() {
+        if (selectedSkin !== 'patrick') return;
+        if (isDead || isChargingGrapple || isGrappling || isDroneMode || 
+            isChargingUltimate || isChargingGrenade || isChargingDrone || isChargingCloth || isSwingingBat) return;
+        
+        breakSpawnImmunity();
+        
+        isChargingGrapple = true;
+        grappleCharge = 0;
+        currentAnimState = 'charging';
+    };
+    
+    // Cancel grapple charging
+    window.cancelGrapple = function() {
+        if (isChargingGrapple) {
+            isChargingGrapple = false;
+            grappleCharge = 0;
+            currentAnimState = 'idle';
+            
+            const grappleContainer = document.getElementById('grappleContainer');
+            if (grappleContainer) grappleContainer.style.display = 'none';
+            const grappleBar = document.getElementById('grappleBar');
+            if (grappleBar) grappleBar.style.width = '0%';
+            
+            if (grappleChargingMesh) {
+                grappleChargingMesh.dispose();
+                grappleChargingMesh = null;
+            }
+            
+            resetPlayerArms();
+        }
+    };
+    
+    // Create rope visual between two points
+    function createGrappleRope(startPos, endPos) {
+        // Dispose existing rope
+        if (grappleRopeMesh) {
+            grappleRopeMesh.dispose();
+            grappleRopeMesh = null;
+        }
+        
+        // Create rope path with multiple segments for curve effect
+        const segments = 10;
+        const path = [];
+        for (let i = 0; i <= segments; i++) {
+            const t = i / segments;
+            const point = BABYLON.Vector3.Lerp(startPos, endPos, t);
+            // Add slight sag in middle of rope
+            const sag = Math.sin(t * Math.PI) * 0.3 * BABYLON.Vector3.Distance(startPos, endPos) / 10;
+            point.y -= sag;
+            path.push(point);
+        }
+        
+        // Create rope cross-section shape
+        const ropeRadius = 0.04;
+        const ropeShape = [];
+        for (let i = 0; i < 8; i++) {
+            const angle = (i / 8) * Math.PI * 2;
+            ropeShape.push(new BABYLON.Vector3(Math.cos(angle) * ropeRadius, Math.sin(angle) * ropeRadius, 0));
+        }
+        ropeShape.push(ropeShape[0].clone()); // Close the shape
+        
+        // Create extruded rope
+        grappleRopeMesh = BABYLON.MeshBuilder.ExtrudeShape("grappleRope", {
+            shape: ropeShape,
+            path: path,
+            sideOrientation: BABYLON.Mesh.DOUBLESIDE,
+            updatable: true
+        }, scene);
+        
+        const ropeMat = new BABYLON.StandardMaterial("grappleRopeMat", scene);
+        ropeMat.diffuseColor = new BABYLON.Color3(0.55, 0.35, 0.2); // Brown rope color
+        ropeMat.emissiveColor = new BABYLON.Color3(0.12, 0.08, 0.04);
+        grappleRopeMesh.material = ropeMat;
+        grappleRopeMesh.isPickable = false;
+    }
+    
+    // Update rope visual
+    function updateGrappleRope(startPos, endPos) {
+        if (!grappleRopeMesh || grappleRopeMesh.isDisposed()) {
+            createGrappleRope(startPos, endPos);
+            return;
+        }
+        
+        // Create new path with sag
+        const segments = 10;
+        const path = [];
+        for (let i = 0; i <= segments; i++) {
+            const t = i / segments;
+            const point = BABYLON.Vector3.Lerp(startPos, endPos, t);
+            // Dynamic sag based on distance and if retracting
+            const dist = BABYLON.Vector3.Distance(startPos, endPos);
+            const sag = Math.sin(t * Math.PI) * 0.2 * dist / 15;
+            point.y -= sag;
+            path.push(point);
+        }
+        
+        const ropeRadius = 0.04;
+        const ropeShape = [];
+        for (let i = 0; i < 8; i++) {
+            const angle = (i / 8) * Math.PI * 2;
+            ropeShape.push(new BABYLON.Vector3(Math.cos(angle) * ropeRadius, Math.sin(angle) * ropeRadius, 0));
+        }
+        ropeShape.push(ropeShape[0].clone());
+        
+        // Recreate rope with new path
+        grappleRopeMesh.dispose();
+        grappleRopeMesh = BABYLON.MeshBuilder.ExtrudeShape("grappleRope", {
+            shape: ropeShape,
+            path: path,
+            sideOrientation: BABYLON.Mesh.DOUBLESIDE
+        }, scene);
+        
+        const ropeMat = new BABYLON.StandardMaterial("grappleRopeMat", scene);
+        ropeMat.diffuseColor = new BABYLON.Color3(0.55, 0.35, 0.2);
+        ropeMat.emissiveColor = new BABYLON.Color3(0.12, 0.08, 0.04);
+        grappleRopeMesh.material = ropeMat;
+        grappleRopeMesh.isPickable = false;
+    }
+    
+    // Start retracting the grapple
+    function startGrappleRetraction() {
+        if (!isGrappling) return;
+        
+        const retractObserver = scene.onBeforeRenderObservable.add(() => {
+            if (!isGrappling || !grappleHookMesh || grappleHookMesh.isDisposed()) {
+                scene.onBeforeRenderObservable.remove(retractObserver);
+                releaseGrapple();
+                return;
+            }
+            
+            const playerPos = playerPhysicsBody.position;
+            
+            if (grappleTargetType === 'object' && grappleTarget) {
+                // Pull player towards the stationary object
+                const targetPos = grappleTarget;
+                const direction = targetPos.subtract(playerPos).normalize();
+                const distance = BABYLON.Vector3.Distance(playerPos, targetPos);
+                
+                // Move hook to stay at target
+                grappleHookMesh.position.copyFrom(targetPos);
+                
+                // Pull player
+                if (distance > GRAPPLE_RELEASE_DISTANCE) {
+                    const pullVec = direction.scale(GRAPPLE_PULL_SPEED);
+                    playerPhysicsBody.physicsImpostor.setLinearVelocity(
+                        new BABYLON.Vector3(pullVec.x * 25, pullVec.y * 18, pullVec.z * 25)
+                    );
+                } else {
+                    // Close enough - auto-release
+                    scene.onBeforeRenderObservable.remove(retractObserver);
+                    releaseGrapple();
+                    return;
+                }
+            } else if (grappleTargetType === 'player' && grappleTarget && !grappleTarget.isDisposed()) {
+                // Pull the other player towards us
+                const otherPos = grappleTarget.position;
+                const direction = playerPos.subtract(otherPos).normalize();
+                const distance = BABYLON.Vector3.Distance(playerPos, otherPos);
+                
+                // Keep hook at target player
+                grappleHookMesh.position.copyFrom(otherPos);
+                grappleHookMesh.position.y += 0.5; // Attach at body height
+                
+                // The other player's collider has mass:0, so we can't directly move it
+                // Instead, emit to server to tell the target player to pull themselves
+                if (distance > GRAPPLE_RELEASE_DISTANCE && grappleTargetPlayerId) {
+                    // Emit pull event - server will relay to target player
+                    socket.emit('grapplePulling', { 
+                        targetId: grappleTargetPlayerId,
+                        pullerX: playerPos.x,
+                        pullerY: playerPos.y,
+                        pullerZ: playerPos.z,
+                        distance: distance
+                    });
+                } else if (distance <= GRAPPLE_RELEASE_DISTANCE) {
+                    // Players are now touching - auto-release
+                    scene.onBeforeRenderObservable.remove(retractObserver);
+                    releaseGrapple();
+                    return;
+                }
+            } else {
+                // Target lost
+                scene.onBeforeRenderObservable.remove(retractObserver);
+                releaseGrapple();
+                return;
+            }
+            
+            // Update rope visual
+            updateGrappleRope(
+                playerPos.clone().add(new BABYLON.Vector3(0, 0.5, 0)),
+                grappleHookMesh.position
+            );
+        });
+    }
+    
+    // Release grapple and cleanup
+    window.releaseGrapple = function() {
+        isGrappling = false;
+        grappleTarget = null;
+        grappleTargetType = null;
+        grappleTargetPlayerId = null;
+        
+        if (grappleHookMesh) {
+            grappleHookMesh.dispose();
+            grappleHookMesh = null;
+        }
+        
+        if (grappleRopeMesh) {
+            grappleRopeMesh.dispose();
+            grappleRopeMesh = null;
+        }
+        
+        // Emit release event for other players
+        socket.emit('grappleReleased');
+    };
+    
+    // Fire grapple hook
+    window.fireGrapple = function() {
+        if (!isChargingGrapple) return;
+        
+        // Cleanup charging visual
+        if (grappleChargingMesh) {
+            grappleChargingMesh.dispose();
+            grappleChargingMesh = null;
+        }
+        
+        isChargingGrapple = false;
+        grappleCharge = 0;
+        
+        const grappleContainer = document.getElementById('grappleContainer');
+        if (grappleContainer) grappleContainer.style.display = 'none';
+        
+        // Arm throw animation
+        if (player.rightArm) {
+            player.rightArm.rotation.x = -1.8;
+            setTimeout(() => resetPlayerArms(), 200);
+        }
+        
+        // Get throw direction
+        const forward = camera.getDirection(new BABYLON.Vector3(0, 0, 1));
+        const startPos = playerPhysicsBody.position.clone();
+        startPos.y += 0.5;
+        
+        // Create hook mesh
+        grappleHookMesh = BABYLON.MeshBuilder.CreateCylinder("grappleHook", {
+            height: 0.25,
+            diameterTop: 0.06,
+            diameterBottom: 0.18,
+            tessellation: 8
+        }, scene);
+        const hookMat = new BABYLON.StandardMaterial("grappleHookMat", scene);
+        hookMat.diffuseColor = new BABYLON.Color3(0.35, 0.35, 0.4);
+        hookMat.emissiveColor = new BABYLON.Color3(0.08, 0.08, 0.1);
+        hookMat.specularColor = new BABYLON.Color3(0.9, 0.9, 0.9);
+        hookMat.specularPower = 64;
+        grappleHookMesh.material = hookMat;
+        grappleHookMesh.position.copyFrom(startPos);
+        grappleHookMesh.rotation.x = Math.PI / 2;
+        grappleHookMesh.isPickable = false;
+        
+        // Create initial rope
+        createGrappleRope(startPos, grappleHookMesh.position);
+        
+        isGrappling = true;
+        grappleTarget = null;
+        grappleTargetType = null;
+        grappleTargetPlayerId = null;
+        
+        // Emit to server for other players to see
+        socket.emit('fireGrapple', {
+            x: startPos.x, y: startPos.y, z: startPos.z,
+            dirX: forward.x, dirY: forward.y, dirZ: forward.z
+        });
+        
+        // Animate hook flying forward
+        let distanceTraveled = 0;
+        const hookObserver = scene.onBeforeRenderObservable.add(() => {
+            if (!grappleHookMesh || grappleHookMesh.isDisposed() || !isGrappling) {
+                scene.onBeforeRenderObservable.remove(hookObserver);
+                return;
+            }
+            
+            // Move hook forward
+            grappleHookMesh.position.addInPlace(forward.scale(GRAPPLE_HOOK_SPEED));
+            distanceTraveled += GRAPPLE_HOOK_SPEED;
+            
+            // Update rope
+            updateGrappleRope(
+                playerPhysicsBody.position.clone().add(new BABYLON.Vector3(0, 0.5, 0)), 
+                grappleHookMesh.position
+            );
+            
+            // Check for collisions with other players
+            for (const playerId in otherPlayers) {
+                const p = otherPlayers[playerId];
+                if (p.collider && !p.collider.isDisposed()) {
+                    const dist = BABYLON.Vector3.Distance(grappleHookMesh.position, p.collider.position);
+                    if (dist < 2.0) {
+                        // Hit another player!
+                        grappleTarget = p.collider;
+                        grappleTargetType = 'player';
+                        grappleTargetPlayerId = playerId;
+                        scene.onBeforeRenderObservable.remove(hookObserver);
+                        startGrappleRetraction();
+                        
+                        // Emit hit event
+                        socket.emit('grappleHitPlayer', { targetId: playerId });
+                        return;
+                    }
+                }
+            }
+            
+            // Check for collisions with world (raycast forward)
+            const ray = new BABYLON.Ray(grappleHookMesh.position, forward, 0.8);
+            const hit = scene.pickWithRay(ray, function(mesh) {
+                return mesh.isPickable && 
+                       mesh !== playerPhysicsBody && 
+                       mesh !== grappleHookMesh &&
+                       mesh !== grappleRopeMesh &&
+                       !mesh.name.startsWith("player") &&
+                       !mesh.name.startsWith("otherPlayer") &&
+                       !mesh.name.startsWith("grapple") &&
+                       mesh.name !== "skybox" &&
+                       mesh.name !== "front";
+            });
+            
+            if (hit && hit.hit && hit.pickedPoint) {
+                // Hit a stationary object!
+                grappleTarget = hit.pickedPoint.clone();
+                grappleTargetType = 'object';
+                scene.onBeforeRenderObservable.remove(hookObserver);
+                
+                // Emit object hit
+                socket.emit('grappleHitObject', { 
+                    x: hit.pickedPoint.x, 
+                    y: hit.pickedPoint.y, 
+                    z: hit.pickedPoint.z 
+                });
+                
+                startGrappleRetraction();
+                return;
+            }
+            
+            // Max range check - release if went too far
+            if (distanceTraveled >= GRAPPLE_RANGE) {
+                scene.onBeforeRenderObservable.remove(hookObserver);
+                releaseGrapple();
+            }
+        });
+        
+        currentAnimState = 'idle';
+    };
+    
     // Launch drone after charging
     window.launchDrone = function() {
         isChargingDrone = false;
@@ -4844,13 +5282,14 @@ function addOtherPlayer(playerInfo) {
 }
 
 // Apply animation to other player's character
-function applyOtherPlayerAnimation(playerData, animState, chargeLevel, grenadeChargeLevel, droneChargeLevel, clothChargeLevel) {
+function applyOtherPlayerAnimation(playerData, animState, chargeLevel, grenadeChargeLevel, droneChargeLevel, clothChargeLevel, grappleChargeLevel) {
     const mesh = playerData.mesh;
     if (!mesh || !mesh.leftArm || !mesh.rightArm) return;
     
     grenadeChargeLevel = grenadeChargeLevel || 0;
     droneChargeLevel = droneChargeLevel || 0;
     clothChargeLevel = clothChargeLevel || 0;
+    grappleChargeLevel = grappleChargeLevel || 0;
     
     // Handle ultimate charging ball
     if (animState === 'charging' && chargeLevel > 0) {
@@ -5056,9 +5495,47 @@ function applyOtherPlayerAnimation(playerData, animState, chargeLevel, grenadeCh
             playerData.clothChargingMesh = null;
         }
     }
+    // Handle grapple charging (Patrick ability - hook in front of player)
+    if (animState === 'charging' && grappleChargeLevel > 0) {
+        // Create or update grapple charging visual
+        if (!playerData.grappleChargingMesh) {
+            playerData.grappleChargingMesh = BABYLON.MeshBuilder.CreateCylinder("otherGrappleCharging", {
+                height: 0.3,
+                diameterTop: 0.05,
+                diameterBottom: 0.15,
+                tessellation: 8
+            }, scene);
+            const chargeMat = new BABYLON.StandardMaterial("otherGrappleChargeMat", scene);
+            chargeMat.diffuseColor = new BABYLON.Color3(0.5, 0.5, 0.5);
+            chargeMat.emissiveColor = new BABYLON.Color3(0.2, 0.2, 0.2);
+            chargeMat.specularColor = new BABYLON.Color3(0.8, 0.8, 0.8);
+            playerData.grappleChargingMesh.material = chargeMat;
+        }
+        
+        // Size based on charge
+        const chargePercent = grappleChargeLevel / 100;
+        playerData.grappleChargingMesh.scaling.setAll(0.5 + chargePercent * 0.5);
+        
+        // Position in front of character
+        const forward = new BABYLON.Vector3(Math.sin(mesh.rotation.y), 0, Math.cos(mesh.rotation.y));
+        const hookPos = mesh.position.add(forward.scale(1.5));
+        hookPos.y += 1.0;
+        playerData.grappleChargingMesh.position.copyFrom(hookPos);
+        playerData.grappleChargingMesh.rotation.x = Math.PI / 2; // Point forward
+        
+        // Right arm forward (holding rope)
+        mesh.rightArm.rotation.x = -1.4;
+        mesh.rightArm.rotation.z = 0;
+    } else {
+        // Dispose grapple charging mesh if not charging grapple
+        if (playerData.grappleChargingMesh) {
+            playerData.grappleChargingMesh.dispose();
+            playerData.grappleChargingMesh = null;
+        }
+    }
     
     // Handle other animations when not charging anything
-    if (!(animState === 'charging' && (chargeLevel > 0 || grenadeChargeLevel > 0 || droneChargeLevel > 0 || clothChargeLevel > 0))) {
+    if (!(animState === 'charging' && (chargeLevel > 0 || grenadeChargeLevel > 0 || droneChargeLevel > 0 || clothChargeLevel > 0 || grappleChargeLevel > 0))) {
         if (animState === 'shooting') {
             // One arm punch
             mesh.rightArm.rotation.x = -1.2;
@@ -5202,7 +5679,7 @@ socket.on('playerMoved', (playerInfo) => {
         p.targetZ = p.serverZ;
         
         // Apply animation state immediately
-        applyOtherPlayerAnimation(p, playerInfo.animState || 'idle', playerInfo.chargeLevel || 0, playerInfo.grenadeChargeLevel || 0, playerInfo.droneChargeLevel || 0, playerInfo.clothChargeLevel || 0);
+        applyOtherPlayerAnimation(p, playerInfo.animState || 'idle', playerInfo.chargeLevel || 0, playerInfo.grenadeChargeLevel || 0, playerInfo.droneChargeLevel || 0, playerInfo.clothChargeLevel || 0, playerInfo.grappleChargeLevel || 0);
         
         // Handle other player's drone
         if (playerInfo.isDroneMode) {
@@ -6362,6 +6839,33 @@ socket.on('mineTriggered', (data) => {
     }
 });
 
+// Being pulled by another player's grapple hook (Patrick ability)
+socket.on('beingGrapplePulled', (pullData) => {
+    if (playerPhysicsBody && playerPhysicsBody.physicsImpostor && !isDead && !hasSpawnImmunity) {
+        // Calculate direction towards the puller
+        const pullerPos = new BABYLON.Vector3(pullData.pullerX, pullData.pullerY, pullData.pullerZ);
+        const myPos = playerPhysicsBody.position;
+        const direction = pullerPos.subtract(myPos).normalize();
+        
+        // Apply continuous pull velocity
+        const pullStrength = 20; // Units per second
+        playerPhysicsBody.physicsImpostor.setLinearVelocity(
+            new BABYLON.Vector3(
+                direction.x * pullStrength,
+                direction.y * pullStrength * 0.5, // Less vertical pull
+                direction.z * pullStrength
+            )
+        );
+        
+        // Track who's grappling us (for death messages)
+        lastHitterId = pullData.pullerId;
+        lastHitterTime = Date.now();
+        lastHitCause = "Grappled";
+    } else if (hasSpawnImmunity) {
+        console.log('GRAPPLE PULL BLOCKED BY SPAWN IMMUNITY!');
+    }
+});
+
 // Helper function to spawn block
 function spawnBlock(data) {
     var mesh;
@@ -6803,6 +7307,11 @@ document.addEventListener('keydown', function(event) {
     if (event.code === "KeyT") {
         window.startChargingCloth();
     }
+    
+    // Patrick Grapple Hook ability - hold G to charge (only works with Patrick skin)
+    if (event.code === "KeyG") {
+        window.startChargingGrapple();
+    }
 });
 
 document.addEventListener('keyup', function(event) {
@@ -6834,6 +7343,11 @@ document.addEventListener('keyup', function(event) {
     // Cancel cloth if T is released before fully charged (Peter Griffin ability)
     if (event.code === "KeyT") {
         window.cancelCloth();
+    }
+    
+    // Cancel grapple if G is released before fully charged (Patrick ability)
+    if (event.code === "KeyG") {
+        window.cancelGrapple();
     }
 });
 

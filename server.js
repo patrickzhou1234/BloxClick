@@ -709,6 +709,7 @@ io.on('connection', (socket) => {
             players[socket.id].grenadeChargeLevel = movementData.grenadeChargeLevel;
             players[socket.id].droneChargeLevel = movementData.droneChargeLevel;
             players[socket.id].clothChargeLevel = movementData.clothChargeLevel;
+            players[socket.id].grappleChargeLevel = movementData.grappleChargeLevel;
             players[socket.id].isDroneMode = movementData.isDroneMode;
             players[socket.id].droneX = movementData.droneX;
             players[socket.id].droneY = movementData.droneY;
@@ -731,6 +732,7 @@ io.on('connection', (socket) => {
                 grenadeChargeLevel: players[socket.id].grenadeChargeLevel,
                 droneChargeLevel: players[socket.id].droneChargeLevel,
                 clothChargeLevel: players[socket.id].clothChargeLevel,
+                grappleChargeLevel: players[socket.id].grappleChargeLevel,
                 isDroneMode: players[socket.id].isDroneMode,
                 droneX: players[socket.id].droneX,
                 droneY: players[socket.id].droneY,
@@ -965,6 +967,33 @@ io.on('connection', (socket) => {
         if (players[socket.id]) {
             const roomId = players[socket.id].roomId;
             socket.to(roomId).emit('playerGrappleEnd', grappleData);
+        }
+    });
+
+    // Patrick grapple hook - pulling a player
+    socket.on('grapplePulling', (pullData) => {
+        if (players[socket.id] && pullData.targetId) {
+            const roomId = players[socket.id].roomId;
+            const pullerName = players[socket.id].username || 'Player';
+            
+            // Send pull event to the target player so they move
+            io.to(pullData.targetId).emit('beingGrapplePulled', {
+                pullerId: socket.id,
+                pullerName: pullerName,
+                pullerX: pullData.pullerX,
+                pullerY: pullData.pullerY,
+                pullerZ: pullData.pullerZ,
+                distance: pullData.distance
+            });
+            
+            // Also broadcast to room so others can see the rope
+            socket.to(roomId).emit('playerBeingGrappled', {
+                pullerId: socket.id,
+                targetId: pullData.targetId,
+                pullerX: pullData.pullerX,
+                pullerY: pullData.pullerY,
+                pullerZ: pullData.pullerZ
+            });
         }
     });
 
