@@ -974,6 +974,20 @@ const DRONE_SPEED = 0.3; // Movement speed
 const DRONE_BOMB_COOLDOWN = 1000; // 1 second between bombs
 let canDropBomb = true;
 
+// Peter Griffin Cloth ability state (exclusive to Peter Griffin skin)
+let isChargingCloth = false;
+let clothCharge = 0;
+let clothChargingMesh = null;
+let isBlinded = false;
+let blindingClothMesh = null;
+let blindingOverlay = null;
+const CLOTH_CHARGE_TIME = 2000; // 2 seconds to fully charge
+const CLOTH_CHARGE_RATE = 100 / (CLOTH_CHARGE_TIME / 16.67);
+const CLOTH_THROW_SPEED = 5; // Impulse strength (lower = slower throw)
+const CLOTH_BLIND_DURATION = 10000; // 4 seconds of blindness
+const CLOTH_SIZE = 3; // Size of the cloth
+const CLOTH_TEXTURE_URL = "https://upload.wikimedia.org/wikipedia/commons/2/2a/VichyKaro.png";
+
 // Preloaded 3D models
 const DRONE_MODEL_URL = "https://files.catbox.moe/z7hxt9.glb";
 const ULTIMATE_MODEL_URL = "https://files.catbox.moe/84ufxa.glb";
@@ -1650,6 +1664,11 @@ function clearRoomState() {
     
     spawnedMines.forEach(mine => disposeMine(mine));
     spawnedMines.length = 0;
+    
+    // Clear any blinding effect when changing rooms
+    if (typeof window.removeBlindingEffect === 'function') {
+        window.removeBlindingEffect();
+    }
 }
 
 // Cancel all charging abilities (used when hit by projectiles)
@@ -1662,6 +1681,9 @@ function cancelAllChargingAbilities() {
     }
     if (typeof window.cancelDrone === 'function' && isChargingDrone) {
         window.cancelDrone();
+    }
+    if (typeof window.cancelCloth === 'function' && isChargingCloth) {
+        window.cancelCloth();
     }
 }
 
@@ -1807,6 +1829,7 @@ function cleanupOtherPlayerResources(playerData) {
     }
     if (playerData.grenadeChargingBall) playerData.grenadeChargingBall.dispose();
     if (playerData.droneChargingBall) playerData.droneChargingBall.dispose();
+    if (playerData.clothChargingMesh) playerData.clothChargingMesh.dispose();
     if (playerData.grappleHook) playerData.grappleHook.dispose();
     if (playerData.grappleLine) playerData.grappleLine.dispose();
     if (playerData.shieldBubbleMesh) playerData.shieldBubbleMesh.dispose();
@@ -3024,6 +3047,67 @@ var createScene = function () {
             }
         }
         
+        // Cloth charging (Peter Griffin only)
+        if (isChargingCloth && !isDead && !isDroneMode && selectedSkin === 'peter griffin') {
+            clothCharge = Math.min(clothCharge + CLOTH_CHARGE_RATE, 100);
+            
+            // Position both arms out while charging (like holding a tablecloth)
+            if (player.leftArm && player.rightArm) {
+                player.leftArm.rotation.x = -1.2;
+                player.rightArm.rotation.x = -1.2;
+                player.leftArm.rotation.z = 0.8;
+                player.rightArm.rotation.z = -0.8;
+            }
+            
+            // Create or update charging visual (cloth preview)
+            if (!clothChargingMesh) {
+                clothChargingMesh = BABYLON.MeshBuilder.CreateGround("clothCharging", {
+                    width: CLOTH_SIZE * 0.5,
+                    height: CLOTH_SIZE * 0.5,
+                    subdivisions: 4
+                }, scene);
+                const chargeMat = new BABYLON.StandardMaterial("clothChargeMat", scene);
+                chargeMat.diffuseTexture = new BABYLON.Texture(CLOTH_TEXTURE_URL, scene);
+                chargeMat.diffuseTexture.uScale = 2;
+                chargeMat.diffuseTexture.vScale = 2;
+                chargeMat.backFaceCulling = false;
+                chargeMat.emissiveColor = new BABYLON.Color3(0.2, 0.1, 0);
+                clothChargingMesh.material = chargeMat;
+            }
+            
+            const chargePercent = clothCharge / 100;
+            const clothScale = 0.3 + chargePercent * 0.7;
+            clothChargingMesh.scaling.setAll(clothScale);
+            
+            // Position in front of player (consistent with where it will be thrown from)
+            var lookDir = camera.getDirection(new BABYLON.Vector3(0, 0, 1));
+            var clothPos = playerPhysicsBody.position.add(lookDir.scale(2));
+            clothPos.y += 1.2; // Chest height
+            clothChargingMesh.position.copyFrom(clothPos);
+            
+            // Orient towards throw direction
+            const yRotation = Math.atan2(lookDir.x, lookDir.z);
+            clothChargingMesh.rotation.x = Math.PI / 4; // Tilt slightly
+            clothChargingMesh.rotation.y = yRotation; // Face throw direction
+            
+            const clothBar = document.getElementById('clothBar');
+            if (clothBar) {
+                clothBar.style.width = clothCharge + '%';
+            }
+            
+            const clothContainer = document.getElementById('clothContainer');
+            if (clothContainer) {
+                clothContainer.style.display = 'block';
+            }
+            
+            currentAnimState = 'charging';
+            
+            // Throw when fully charged
+            if (clothCharge >= 100) {
+                throwCloth();
+            }
+        }
+        
         // Drone mode controls
         if (isDroneMode && droneMesh && droneCamera) {
             // Drone movement with WASD
@@ -3142,6 +3226,7 @@ var createScene = function () {
                         chargeLevel: isChargingUltimate ? ultimateCharge : 0,
                         grenadeChargeLevel: isChargingGrenade ? grenadeCharge : 0,
                         droneChargeLevel: isChargingDrone ? droneCharge : 0,
+                        clothChargeLevel: isChargingCloth ? clothCharge : 0,
                         isDroneMode: isDroneMode,
                         droneX: droneMesh ? droneMesh.position.x : 0,
                         droneY: droneMesh ? droneMesh.position.y : 0,
@@ -3231,6 +3316,11 @@ var createScene = function () {
         
         // Notify other players that we respawned (show our character on their screens)
         socket.emit('playerRespawned');
+        
+        // Remove any blinding effect on respawn
+        if (typeof window.removeBlindingEffect === 'function') {
+            window.removeBlindingEffect();
+        }
         
         // Hide death overlay
         document.getElementById('deathOverlay').style.display = 'none';
@@ -3714,6 +3804,302 @@ var createScene = function () {
             }
             
             resetPlayerArms();
+        }
+    };
+    
+    // ============ PETER GRIFFIN CLOTH ABILITY ============
+    // Start charging cloth (Peter Griffin only)
+    window.startChargingCloth = function() {
+        // Only works with Peter Griffin skin
+        if (selectedSkin !== 'peter griffin') {
+            return;
+        }
+        if (isDead || isChargingCloth || isDroneMode || isChargingUltimate || isChargingGrenade || isChargingDrone || isSwingingBat) return;
+        
+        // Break spawn immunity when attacking
+        breakSpawnImmunity();
+        
+        isChargingCloth = true;
+        clothCharge = 0;
+        currentAnimState = 'charging';
+    };
+    
+    // Cancel cloth charging
+    window.cancelCloth = function() {
+        if (isChargingCloth) {
+            isChargingCloth = false;
+            clothCharge = 0;
+            currentAnimState = 'idle';
+            
+            const clothContainer = document.getElementById('clothContainer');
+            if (clothContainer) clothContainer.style.display = 'none';
+            const clothBar = document.getElementById('clothBar');
+            if (clothBar) clothBar.style.width = '0%';
+            
+            if (clothChargingMesh) {
+                clothChargingMesh.dispose();
+                clothChargingMesh = null;
+            }
+            
+            resetPlayerArms();
+        }
+    };
+    
+    // Create thrown cloth - animated movement with cloth visual
+    function createClothProjectile(startPos, direction, isLocalPlayer) {
+        // Create the cloth mesh (Ground mesh works best for cloth-like appearance)
+        const cloth = BABYLON.MeshBuilder.CreateGround("cloth_" + Date.now(), {
+            width: CLOTH_SIZE,
+            height: CLOTH_SIZE,
+            subdivisions: 8
+        }, scene);
+        
+        // Apply the vichy pattern texture
+        const clothMat = new BABYLON.StandardMaterial("clothMat_" + Date.now(), scene);
+        clothMat.diffuseColor = new BABYLON.Color3(0.9, 0.7, 0.5);
+        clothMat.emissiveColor = new BABYLON.Color3(0.15, 0.1, 0.05);
+        clothMat.backFaceCulling = false;
+        clothMat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+        
+        // Load texture
+        const tex = new BABYLON.Texture(CLOTH_TEXTURE_URL, scene);
+        tex.uScale = 3;
+        tex.vScale = 3;
+        clothMat.diffuseTexture = tex;
+        cloth.material = clothMat;
+        
+        // Position and orient the cloth
+        cloth.position.copyFrom(startPos);
+        cloth.rotation.x = Math.PI / 2; // Make it vertical, facing forward
+        
+        // Calculate target direction
+        const normalizedDir = direction.normalize();
+        const speed = 0.4; // Units per frame
+        let distanceTraveled = 0;
+        const maxDistance = 30; // Max throw distance
+        let hasHit = false;
+        
+        // Animation loop - move the cloth forward and check for collisions
+        let time = 0;
+        const moveObserver = scene.onBeforeRenderObservable.add(() => {
+            if (!cloth || cloth.isDisposed() || hasHit) {
+                scene.onBeforeRenderObservable.remove(moveObserver);
+                return;
+            }
+            
+            time += 0.1;
+            
+            // Move forward
+            cloth.position.addInPlace(normalizedDir.scale(speed));
+            distanceTraveled += speed;
+            
+            // Add slight arc (gravity effect) and flutter
+            cloth.position.y -= 0.02; // Slight drop
+            cloth.rotation.z = Math.sin(time) * 0.3; // Flutter
+            cloth.rotation.y += 0.05; // Spin
+            
+            // Check collision with other players
+            if (isLocalPlayer) {
+                for (const playerId in otherPlayers) {
+                    const p = otherPlayers[playerId];
+                    if (p.mesh && p.collider) {
+                        const dist = BABYLON.Vector3.Distance(cloth.position, p.collider.position);
+                        if (dist < 2.5) {
+                            hasHit = true;
+                            
+                            // Emit cloth hit to server
+                            socket.emit('clothHitPlayer', {
+                                targetId: playerId,
+                                clothId: cloth.name
+                            });
+                            
+                            // Dispose cloth after hit
+                            scene.onBeforeRenderObservable.remove(moveObserver);
+                            setTimeout(() => {
+                                if (cloth && !cloth.isDisposed()) {
+                                    cloth.dispose();
+                                }
+                            }, 100);
+                            return;
+                        }
+                    }
+                }
+            }
+            
+            // Check if hit ground or traveled too far
+            if (cloth.position.y < 0.5 || distanceTraveled > maxDistance) {
+                scene.onBeforeRenderObservable.remove(moveObserver);
+                // Dispose after a moment
+                setTimeout(() => {
+                    if (cloth && !cloth.isDisposed()) {
+                        cloth.dispose();
+                    }
+                }, 500);
+            }
+        });
+        
+        cloth.moveObserver = moveObserver;
+        
+        return cloth;
+    }
+    
+    // Throw the cloth (Peter Griffin only)
+    window.throwCloth = function() {
+        if (!isChargingCloth) return;
+        
+        // Dispose charging visual
+        if (clothChargingMesh) {
+            clothChargingMesh.dispose();
+            clothChargingMesh = null;
+        }
+        
+        isChargingCloth = false;
+        clothCharge = 0;
+        
+        // Hide UI
+        const clothContainer = document.getElementById('clothContainer');
+        if (clothContainer) clothContainer.style.display = 'none';
+        
+        // Arm throw animation
+        if (player.leftArm && player.rightArm) {
+            player.leftArm.rotation.x = -1.8;
+            player.rightArm.rotation.x = -1.8;
+            player.leftArm.rotation.z = 0;
+            player.rightArm.rotation.z = 0;
+            setTimeout(() => resetPlayerArms(), 200);
+        }
+        
+        // Get throw direction (use camera direction for aiming)
+        const forward = camera.getDirection(new BABYLON.Vector3(0, 0, 1));
+        forward.y = Math.max(forward.y, -0.3); // Don't throw too steeply downward
+        
+        // Spawn in front of the PLAYER (not camera), so it works in both first and third person
+        const spawnPos = playerPhysicsBody.position.clone().add(forward.scale(2.5));
+        spawnPos.y += 1; // Start at about chest height
+        
+        // Create the cloth projectile (collision detection is handled inside)
+        const cloth = createClothProjectile(spawnPos, forward, true);
+        
+        const clothId = cloth.name;
+        
+        // Emit to server for other players to see
+        const clothEmitData = {
+            x: spawnPos.x,
+            y: spawnPos.y,
+            z: spawnPos.z,
+            dirX: forward.x,
+            dirY: forward.y,
+            dirZ: forward.z,
+            clothId: clothId
+        };
+        socket.emit('throwCloth', clothEmitData);
+        
+        currentAnimState = 'idle';
+    };
+    
+    // Apply blinding effect to the local player (when hit by cloth)
+    window.applyBlindingEffect = function(duration = CLOTH_BLIND_DURATION) {
+        if (isBlinded) return; // Already blinded
+        
+        isBlinded = true;
+        
+        // Create fullscreen blinding overlay (works in both first and third person)
+        if (!blindingOverlay) {
+            blindingOverlay = document.createElement('div');
+            blindingOverlay.id = 'blindingOverlay';
+            blindingOverlay.style.cssText = `
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                z-index: 999;
+                pointer-events: none;
+                background: url('${CLOTH_TEXTURE_URL}');
+                background-size: cover;
+                opacity: 0.95;
+                animation: clothWobble 0.5s ease-in-out infinite alternate;
+            `;
+            document.body.appendChild(blindingOverlay);
+            
+            // Add wobble animation if not exists
+            if (!document.getElementById('clothWobbleStyle')) {
+                const style = document.createElement('style');
+                style.id = 'clothWobbleStyle';
+                style.textContent = `
+                    @keyframes clothWobble {
+                        0% { transform: scale(1.02) rotate(-1deg); }
+                        100% { transform: scale(0.98) rotate(1deg); }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+        }
+        
+        // Also create a 3D cloth mesh that covers the player's face (for visual effect)
+        if (!blindingClothMesh) {
+            blindingClothMesh = BABYLON.MeshBuilder.CreatePlane("blindingCloth", {
+                width: 4,
+                height: 4
+            }, scene);
+            
+            const blindMat = new BABYLON.StandardMaterial("blindingClothMat", scene);
+            blindMat.diffuseTexture = new BABYLON.Texture(CLOTH_TEXTURE_URL, scene);
+            blindMat.diffuseTexture.uScale = 2;
+            blindMat.diffuseTexture.vScale = 2;
+            blindMat.backFaceCulling = false;
+            blindMat.emissiveColor = new BABYLON.Color3(0.3, 0.2, 0.1);
+            blindingClothMesh.material = blindMat;
+            blindingClothMesh.isPickable = false;
+            
+            // Position in front of camera at all times
+            const updateBlindingCloth = scene.onBeforeRenderObservable.add(() => {
+                if (blindingClothMesh && !blindingClothMesh.isDisposed()) {
+                    const cam = scene.activeCamera;
+                    if (cam) {
+                        const forward = cam.getDirection(new BABYLON.Vector3(0, 0, 1));
+                        blindingClothMesh.position = cam.position.add(forward.scale(0.5));
+                        blindingClothMesh.lookAt(cam.position);
+                        // Add slight wobble
+                        blindingClothMesh.rotation.z = Math.sin(Date.now() * 0.005) * 0.1;
+                    }
+                } else {
+                    scene.onBeforeRenderObservable.remove(updateBlindingCloth);
+                }
+            });
+            blindingClothMesh.updateObserver = updateBlindingCloth;
+        }
+        
+        // Remove blinding after duration
+        setTimeout(() => {
+            removeBlindingEffect();
+        }, duration);
+    };
+    
+    // Remove the blinding effect
+    window.removeBlindingEffect = function() {
+        isBlinded = false;
+        
+        if (blindingOverlay) {
+            blindingOverlay.remove();
+            blindingOverlay = null;
+        }
+        
+        if (blindingClothMesh) {
+            if (blindingClothMesh.updateObserver) {
+                scene.onBeforeRenderObservable.remove(blindingClothMesh.updateObserver);
+            }
+            blindingClothMesh.dispose();
+            blindingClothMesh = null;
+        }
+        
+        // Also remove the draped cloth on us
+        if (window.myDrapedCloth && !window.myDrapedCloth.isDisposed()) {
+            if (window.myDrapedCloth.drapingObserver) {
+                scene.onBeforeRenderObservable.remove(window.myDrapedCloth.drapingObserver);
+            }
+            window.myDrapedCloth.dispose();
+            window.myDrapedCloth = null;
         }
     };
     
@@ -4458,12 +4844,13 @@ function addOtherPlayer(playerInfo) {
 }
 
 // Apply animation to other player's character
-function applyOtherPlayerAnimation(playerData, animState, chargeLevel, grenadeChargeLevel, droneChargeLevel) {
+function applyOtherPlayerAnimation(playerData, animState, chargeLevel, grenadeChargeLevel, droneChargeLevel, clothChargeLevel) {
     const mesh = playerData.mesh;
     if (!mesh || !mesh.leftArm || !mesh.rightArm) return;
     
     grenadeChargeLevel = grenadeChargeLevel || 0;
     droneChargeLevel = droneChargeLevel || 0;
+    clothChargeLevel = clothChargeLevel || 0;
     
     // Handle ultimate charging ball
     if (animState === 'charging' && chargeLevel > 0) {
@@ -4626,8 +5013,52 @@ function applyOtherPlayerAnimation(playerData, animState, chargeLevel, grenadeCh
         }
     }
     
+    // Handle cloth charging (Peter Griffin ability - cloth in front of player)
+    if (animState === 'charging' && clothChargeLevel > 0) {
+        // Create or update cloth charging visual
+        if (!playerData.clothChargingMesh) {
+            playerData.clothChargingMesh = BABYLON.MeshBuilder.CreateGround("otherClothCharging", {
+                width: CLOTH_SIZE * 0.5,
+                height: CLOTH_SIZE * 0.5,
+                subdivisions: 4
+            }, scene);
+            const chargeMat = new BABYLON.StandardMaterial("otherClothChargeMat", scene);
+            chargeMat.diffuseTexture = new BABYLON.Texture(CLOTH_TEXTURE_URL, scene);
+            chargeMat.diffuseTexture.uScale = 2;
+            chargeMat.diffuseTexture.vScale = 2;
+            chargeMat.backFaceCulling = false;
+            chargeMat.emissiveColor = new BABYLON.Color3(0.2, 0.1, 0);
+            playerData.clothChargingMesh.material = chargeMat;
+        }
+        
+        // Size based on charge
+        const chargePercent = clothChargeLevel / 100;
+        const clothScale = 0.3 + chargePercent * 0.7;
+        playerData.clothChargingMesh.scaling.setAll(clothScale);
+        
+        // Position in front of character
+        const forward = new BABYLON.Vector3(Math.sin(mesh.rotation.y), 0, Math.cos(mesh.rotation.y));
+        const clothPos = mesh.position.add(forward.scale(1.5));
+        clothPos.y += 1.0;
+        playerData.clothChargingMesh.position.copyFrom(clothPos);
+        playerData.clothChargingMesh.rotation.x = Math.PI / 4; // Tilt towards player
+        playerData.clothChargingMesh.rotation.y += 0.05; // Slight spin
+        
+        // Arms out wide (like holding a tablecloth)
+        mesh.leftArm.rotation.x = -1.2;
+        mesh.rightArm.rotation.x = -1.2;
+        mesh.leftArm.rotation.z = 0.8;
+        mesh.rightArm.rotation.z = -0.8;
+    } else {
+        // Dispose cloth charging mesh if not charging cloth
+        if (playerData.clothChargingMesh) {
+            playerData.clothChargingMesh.dispose();
+            playerData.clothChargingMesh = null;
+        }
+    }
+    
     // Handle other animations when not charging anything
-    if (!(animState === 'charging' && (chargeLevel > 0 || grenadeChargeLevel > 0 || droneChargeLevel > 0))) {
+    if (!(animState === 'charging' && (chargeLevel > 0 || grenadeChargeLevel > 0 || droneChargeLevel > 0 || clothChargeLevel > 0))) {
         if (animState === 'shooting') {
             // One arm punch
             mesh.rightArm.rotation.x = -1.2;
@@ -4771,7 +5202,7 @@ socket.on('playerMoved', (playerInfo) => {
         p.targetZ = p.serverZ;
         
         // Apply animation state immediately
-        applyOtherPlayerAnimation(p, playerInfo.animState || 'idle', playerInfo.chargeLevel || 0, playerInfo.grenadeChargeLevel || 0, playerInfo.droneChargeLevel || 0);
+        applyOtherPlayerAnimation(p, playerInfo.animState || 'idle', playerInfo.chargeLevel || 0, playerInfo.grenadeChargeLevel || 0, playerInfo.droneChargeLevel || 0, playerInfo.clothChargeLevel || 0);
         
         // Handle other player's drone
         if (playerInfo.isDroneMode) {
@@ -5269,6 +5700,227 @@ socket.on('grenadeShot', (grenadeData) => {
             grenade.dispose();
         }
     }, 10000);
+});
+
+// Receive cloth thrown by other players (Peter Griffin ability)
+socket.on('clothThrown', (clothData) => {
+    if (!scene) return;
+    
+    const startPos = new BABYLON.Vector3(clothData.x, clothData.y, clothData.z);
+    const direction = new BABYLON.Vector3(clothData.dirX, clothData.dirY, clothData.dirZ);
+    
+    // Create the cloth mesh
+    const cloth = BABYLON.MeshBuilder.CreateGround("otherCloth_" + clothData.clothId, {
+        width: CLOTH_SIZE,
+        height: CLOTH_SIZE,
+        subdivisions: 8
+    }, scene);
+    
+    // Apply the vichy pattern texture
+    const clothMat = new BABYLON.StandardMaterial("otherClothMat_" + clothData.clothId, scene);
+    clothMat.diffuseColor = new BABYLON.Color3(0.9, 0.7, 0.5);
+    clothMat.emissiveColor = new BABYLON.Color3(0.15, 0.1, 0.05);
+    clothMat.backFaceCulling = false;
+    clothMat.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+    
+    const tex = new BABYLON.Texture(CLOTH_TEXTURE_URL, scene);
+    tex.uScale = 3;
+    tex.vScale = 3;
+    clothMat.diffuseTexture = tex;
+    cloth.material = clothMat;
+    
+    // Position and orient
+    cloth.position.copyFrom(startPos);
+    cloth.rotation.x = Math.PI / 2;
+    
+    // Animated movement (same as local player)
+    const normalizedDir = direction.normalize();
+    const speed = 0.4;
+    let distanceTraveled = 0;
+    const maxDistance = 30;
+    let time = 0;
+    
+    const moveObserver = scene.onBeforeRenderObservable.add(() => {
+        if (!cloth || cloth.isDisposed()) {
+            scene.onBeforeRenderObservable.remove(moveObserver);
+            return;
+        }
+        
+        time += 0.1;
+        
+        // Move forward
+        cloth.position.addInPlace(normalizedDir.scale(speed));
+        distanceTraveled += speed;
+        
+        // Add slight arc and flutter
+        cloth.position.y -= 0.02;
+        cloth.rotation.z = Math.sin(time) * 0.3;
+        cloth.rotation.y += 0.05;
+        
+        // Check if hit ground or traveled too far
+        if (cloth.position.y < 0.5 || distanceTraveled > maxDistance) {
+            scene.onBeforeRenderObservable.remove(moveObserver);
+            setTimeout(() => {
+                if (cloth && !cloth.isDisposed()) {
+                    cloth.dispose();
+                }
+            }, 500);
+        }
+    });
+});
+
+// You got hit by someone's cloth - apply blinding effect
+socket.on('clothHitYou', (data) => {
+    // Apply the blinding effect
+    window.applyBlindingEffect(CLOTH_BLIND_DURATION);
+    
+    // Show notification
+    addChatMessage({
+        username: 'System',
+        message: `You've been blinded by ${data.attackerName || 'Peter Griffin'}!`,
+        isSystem: true
+    });
+});
+
+// Show cloth draped over a player (visible to everyone)
+socket.on('playerClothed', (data) => {
+    // Find the victim's mesh
+    let victimMesh = null;
+    let victimCollider = null;
+    
+    if (data.victimId === socket.id) {
+        // It's us - use player mesh
+        victimMesh = player;
+        victimCollider = playerPhysicsBody;
+    } else if (otherPlayers[data.victimId]) {
+        // It's another player
+        victimMesh = otherPlayers[data.victimId].mesh;
+        victimCollider = otherPlayers[data.victimId].collider;
+    }
+    
+    if (!victimMesh || !victimCollider) {
+        return;
+    }
+    
+    // Create the cloth that drapes over the player
+    const clothOnPlayer = BABYLON.MeshBuilder.CreateGround("clothOnPlayer_" + data.victimId, {
+        width: CLOTH_SIZE * 1.2,
+        height: CLOTH_SIZE * 1.2,
+        subdivisions: 10
+    }, scene);
+    
+    // Apply the vichy pattern texture
+    const clothMat = new BABYLON.StandardMaterial("clothOnPlayerMat_" + data.victimId, scene);
+    clothMat.diffuseColor = new BABYLON.Color3(0.9, 0.7, 0.5);
+    clothMat.emissiveColor = new BABYLON.Color3(0.1, 0.08, 0.05);
+    clothMat.backFaceCulling = false;
+    
+    const tex = new BABYLON.Texture(CLOTH_TEXTURE_URL, scene);
+    tex.uScale = 3;
+    tex.vScale = 3;
+    clothMat.diffuseTexture = tex;
+    clothOnPlayer.material = clothMat;
+    
+    // Position above the player's head
+    const victimPos = victimCollider.position.clone();
+    clothOnPlayer.position.set(victimPos.x, victimPos.y + 2, victimPos.z);
+    
+    // Try to use ClothImpostor for draping effect
+    try {
+        clothOnPlayer.physicsImpostor = new BABYLON.PhysicsImpostor(
+            clothOnPlayer,
+            BABYLON.PhysicsImpostor.ClothImpostor,
+            { 
+                mass: 0.5, 
+                friction: 0.8, 
+                restitution: 0,
+                margin: 0.1,
+                damping: 0.1
+            },
+            scene
+        );
+        
+        if (clothOnPlayer.physicsImpostor) {
+            clothOnPlayer.physicsImpostor.velocityIterations = 10;
+            clothOnPlayer.physicsImpostor.positionIterations = 10;
+            clothOnPlayer.physicsImpostor.stiffness = 0.8;
+        }
+    } catch (e) {
+        // ClothImpostor failed, will use animated draping
+    }
+    
+    // Follow the player and animate the draping
+    let time = 0;
+    const drapingObserver = scene.onBeforeRenderObservable.add(() => {
+        if (!clothOnPlayer || clothOnPlayer.isDisposed()) {
+            scene.onBeforeRenderObservable.remove(drapingObserver);
+            return;
+        }
+        
+        time += 0.016; // ~60fps
+        
+        // Get current victim position
+        let currentPos;
+        if (data.victimId === socket.id) {
+            currentPos = playerPhysicsBody.position;
+        } else if (otherPlayers[data.victimId] && otherPlayers[data.victimId].collider) {
+            currentPos = otherPlayers[data.victimId].collider.position;
+        } else {
+            // Player left, dispose cloth
+            scene.onBeforeRenderObservable.remove(drapingObserver);
+            clothOnPlayer.dispose();
+            return;
+        }
+        
+        // If not using physics, animate the cloth falling and draping
+        if (!clothOnPlayer.physicsImpostor || clothOnPlayer.physicsImpostor.type !== BABYLON.PhysicsImpostor.ClothImpostor) {
+            // Settle onto player's head over time
+            const targetY = currentPos.y + 1.5;
+            clothOnPlayer.position.x = currentPos.x;
+            clothOnPlayer.position.z = currentPos.z;
+            
+            if (time < 1) {
+                // Falling phase
+                clothOnPlayer.position.y = currentPos.y + 2.5 - (time * 1.5);
+            } else {
+                // Settled phase - slight wobble
+                clothOnPlayer.position.y = targetY + Math.sin(time * 2) * 0.05;
+            }
+            
+            // Slight rotation wobble
+            clothOnPlayer.rotation.y = Math.sin(time * 0.5) * 0.1;
+            clothOnPlayer.rotation.x = Math.sin(time * 0.3) * 0.05;
+            clothOnPlayer.rotation.z = Math.cos(time * 0.4) * 0.05;
+        } else {
+            // Using physics - just keep it roughly above the player
+            // The physics will handle the draping
+        }
+    });
+    
+    // Store reference for cleanup
+    clothOnPlayer.drapingObserver = drapingObserver;
+    
+    // Store on the player data for cleanup when effect ends
+    if (data.victimId === socket.id) {
+        window.myDrapedCloth = clothOnPlayer;
+    } else if (otherPlayers[data.victimId]) {
+        otherPlayers[data.victimId].drapedCloth = clothOnPlayer;
+    }
+    
+    // Remove after the blind duration
+    setTimeout(() => {
+        scene.onBeforeRenderObservable.remove(drapingObserver);
+        if (clothOnPlayer && !clothOnPlayer.isDisposed()) {
+            clothOnPlayer.dispose();
+        }
+        
+        // Clean up references
+        if (data.victimId === socket.id) {
+            window.myDrapedCloth = null;
+        } else if (otherPlayers[data.victimId]) {
+            otherPlayers[data.victimId].drapedCloth = null;
+        }
+    }, CLOTH_BLIND_DURATION);
 });
 
 // Grenade explosion effect with fragments
@@ -6146,6 +6798,11 @@ document.addEventListener('keydown', function(event) {
             window.exitDrone();
         }
     }
+    
+    // Peter Griffin Cloth ability - hold T to charge (only works with Peter Griffin skin)
+    if (event.code === "KeyT") {
+        window.startChargingCloth();
+    }
 });
 
 document.addEventListener('keyup', function(event) {
@@ -6172,6 +6829,11 @@ document.addEventListener('keyup', function(event) {
     // Cancel drone if R is released before fully charged
     if (event.code === "KeyR") {
         window.cancelDrone();
+    }
+    
+    // Cancel cloth if T is released before fully charged (Peter Griffin ability)
+    if (event.code === "KeyT") {
+        window.cancelCloth();
     }
 });
 

@@ -708,6 +708,7 @@ io.on('connection', (socket) => {
             players[socket.id].chargeLevel = movementData.chargeLevel;
             players[socket.id].grenadeChargeLevel = movementData.grenadeChargeLevel;
             players[socket.id].droneChargeLevel = movementData.droneChargeLevel;
+            players[socket.id].clothChargeLevel = movementData.clothChargeLevel;
             players[socket.id].isDroneMode = movementData.isDroneMode;
             players[socket.id].droneX = movementData.droneX;
             players[socket.id].droneY = movementData.droneY;
@@ -729,6 +730,7 @@ io.on('connection', (socket) => {
                 chargeLevel: players[socket.id].chargeLevel,
                 grenadeChargeLevel: players[socket.id].grenadeChargeLevel,
                 droneChargeLevel: players[socket.id].droneChargeLevel,
+                clothChargeLevel: players[socket.id].clothChargeLevel,
                 isDroneMode: players[socket.id].isDroneMode,
                 droneX: players[socket.id].droneX,
                 droneY: players[socket.id].droneY,
@@ -867,6 +869,38 @@ io.on('connection', (socket) => {
             const roomId = players[socket.id].roomId;
             // Broadcast explosion to ALL players in the room including the sender
             io.to(roomId).emit('grenadeExplosion', explosionData);
+        }
+    });
+
+    // Peter Griffin cloth throw
+    socket.on('throwCloth', (clothData) => {
+        clothData.shooterId = socket.id;
+        if (players[socket.id]) {
+            const roomId = players[socket.id].roomId;
+            // Broadcast to other players in the room so they see the cloth
+            socket.to(roomId).emit('clothThrown', clothData);
+        }
+    });
+
+    // Cloth hit a player - notify the victim AND broadcast to all players to show the cloth
+    socket.on('clothHitPlayer', (hitData) => {
+        if (players[socket.id]) {
+            const attackerName = players[socket.id].username || 'Peter Griffin';
+            const roomId = players[socket.id].roomId;
+            
+            // Notify the target player that they've been hit (for blinding effect)
+            io.to(hitData.targetId).emit('clothHitYou', {
+                attackerId: socket.id,
+                attackerName: attackerName,
+                clothId: hitData.clothId
+            });
+            
+            // Broadcast to ALL players in room to show the cloth on the victim
+            io.to(roomId).emit('playerClothed', {
+                victimId: hitData.targetId,
+                attackerId: socket.id,
+                clothId: hitData.clothId
+            });
         }
     });
 
