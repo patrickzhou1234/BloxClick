@@ -711,6 +711,8 @@ io.on('connection', (socket) => {
             players[socket.id].clothChargeLevel = movementData.clothChargeLevel;
             players[socket.id].grappleChargeLevel = movementData.grappleChargeLevel;
             players[socket.id].waterBalloonChargeLevel = movementData.waterBalloonChargeLevel;
+            players[socket.id].balloonChargeLevel = movementData.balloonChargeLevel;
+            players[socket.id].isBalloonActive = movementData.isBalloonActive;
             players[socket.id].isDroneMode = movementData.isDroneMode;
             players[socket.id].droneX = movementData.droneX;
             players[socket.id].droneY = movementData.droneY;
@@ -735,6 +737,8 @@ io.on('connection', (socket) => {
                 clothChargeLevel: players[socket.id].clothChargeLevel,
                 grappleChargeLevel: players[socket.id].grappleChargeLevel,
                 waterBalloonChargeLevel: players[socket.id].waterBalloonChargeLevel,
+                balloonChargeLevel: players[socket.id].balloonChargeLevel,
+                isBalloonActive: players[socket.id].isBalloonActive,
                 isDroneMode: players[socket.id].isDroneMode,
                 droneX: players[socket.id].droneX,
                 droneY: players[socket.id].droneY,
@@ -1032,6 +1036,40 @@ io.on('connection', (socket) => {
             const roomId = players[socket.id].roomId;
             // Broadcast to ALL players in room so everyone sees and can be slowed by the pool
             socket.to(roomId).emit('waterBalloonPoolCreated', poolData);
+        }
+    });
+
+    // Beavis Balloon ability - activated
+    socket.on('balloonActivate', (balloonData) => {
+        if (players[socket.id]) {
+            const roomId = players[socket.id].roomId;
+            socket.to(roomId).emit('playerBalloonActivate', { 
+                playerId: socket.id,
+                x: balloonData.x,
+                y: balloonData.y,
+                z: balloonData.z
+            });
+        }
+    });
+
+    // Beavis Balloon ability - deactivated
+    socket.on('balloonDeactivate', () => {
+        if (players[socket.id]) {
+            const roomId = players[socket.id].roomId;
+            socket.to(roomId).emit('playerBalloonDeactivate', { playerId: socket.id });
+        }
+    });
+
+    // Beavis Balloon ability - popped (with particle effect)
+    socket.on('balloonPopped', (popData) => {
+        if (players[socket.id]) {
+            const roomId = players[socket.id].roomId;
+            socket.to(roomId).emit('playerBalloonPopped', { 
+                playerId: socket.id,
+                x: popData.x,
+                y: popData.y,
+                z: popData.z
+            });
         }
     });
 

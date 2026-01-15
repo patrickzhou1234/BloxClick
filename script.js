@@ -1023,6 +1023,20 @@ const WATER_BALLOON_DROP_INTERVAL = 800; // Drop every 0.8s
 const WATER_BALLOON_POOL_DURATION = 10000; // Pools last 10 seconds
 const WATER_BALLOON_SLOW_FACTOR = 0.01; // Movement speed multiplier when in pool
 
+// Beavis Balloon ability state (exclusive to Beavis skin)
+let isBalloonActive = false;
+let isChargingBalloon = false;
+let balloonCharge = 0;
+let balloonMesh = null;
+let balloonStringMesh = null;
+let balloonChargingMesh = null;
+let balloonTimer = null;
+const BALLOON_CHARGE_TIME = 1500; // 1.5 seconds to charge
+const BALLOON_CHARGE_RATE = 100 / (BALLOON_CHARGE_TIME / 16.67);
+const BALLOON_VELOCITY_FACTOR = 0.15; // How strongly balloon affects velocity
+const BALLOON_GROUND_LEVEL = 0; // Reference ground level
+const BALLOON_DURATION = 15000; // Balloon lasts 15 seconds
+
 // Preloaded 3D models
 const DRONE_MODEL_URL = "https://files.catbox.moe/z7hxt9.glb";
 const ULTIMATE_MODEL_URL = "https://files.catbox.moe/84ufxa.glb";
@@ -3272,6 +3286,11 @@ var createScene = function () {
             }
         }
         
+        // Update Beavis Balloon ability (charging visual and physics)
+        if (window.updateBalloonAbility) {
+            window.updateBalloonAbility();
+        }
+        
         // Drone mode controls
         if (isDroneMode && droneMesh && droneCamera) {
             // Drone movement with WASD
@@ -3393,6 +3412,8 @@ var createScene = function () {
                         clothChargeLevel: isChargingCloth ? clothCharge : 0,
                         grappleChargeLevel: isChargingGrapple ? grappleCharge : 0,
                         waterBalloonChargeLevel: isChargingWaterBalloon ? waterBalloonCharge : 0,
+                        balloonChargeLevel: window.getBalloonChargeLevel ? window.getBalloonChargeLevel() : 0,
+                        isBalloonActive: window.isBalloonActive ? window.isBalloonActive() : false,
                         isDroneMode: isDroneMode,
                         droneX: droneMesh ? droneMesh.position.x : 0,
                         droneY: droneMesh ? droneMesh.position.y : 0,
@@ -3436,6 +3457,14 @@ var createScene = function () {
         }
         if (isGrappling) {
             window.releaseGrapple();
+        }
+        
+        // Cancel balloon if active
+        if (window.cancelBalloon) {
+            window.cancelBalloon();
+        }
+        if (window.deactivateBalloon) {
+            window.deactivateBalloon();
         }
         
         // Notify other players that we died (hide our character on their screens)
@@ -5065,6 +5094,386 @@ var createScene = function () {
     window.checkPlayerInSlowingPool = checkPlayerInSlowingPool;
     window.createSlowingPool = createSlowingPool;
     
+    // ============ BEAVIS BALLOON ABILITY ============
+    
+    // Start charging balloon (Beavis only)
+    window.startChargingBalloon = function() {
+        // Only works with Beavis skin
+        if (selectedSkin !== 'beavis') {
+            return;
+        }
+        
+        // Can't charge if balloon is already active - must wait for it to expire
+        if (isBalloonActive) {
+            return;
+        }
+        
+        if (isDead || isChargingBalloon || isDroneMode || 
+            isChargingUltimate || isChargingGrenade || isChargingDrone || isChargingCloth || 
+            isChargingGrapple || isGrappling || isSwingingBat || isChargingWaterBalloon || isWaterBalloonFlying) return;
+        
+        // Break spawn immunity when activating ability
+        breakSpawnImmunity();
+        
+        isChargingBalloon = true;
+        balloonCharge = 0;
+        currentAnimState = 'charging';
+        
+        // Create charging visual (small balloon above head)
+        if (!balloonChargingMesh) {
+            balloonChargingMesh = BABYLON.MeshBuilder.CreateSphere("balloonCharging", {
+                diameter: 0.3,
+                segments: 12
+            }, scene);
+            const chargeMat = new BABYLON.StandardMaterial("balloonChargeMat", scene);
+            chargeMat.diffuseColor = new BABYLON.Color3(1, 0.2, 0.2);
+            chargeMat.emissiveColor = new BABYLON.Color3(0.5, 0.1, 0.1);
+            chargeMat.alpha = 0.7;
+            balloonChargingMesh.material = chargeMat;
+        }
+    };
+    
+    // Cancel balloon charging (only cancels if not fully charged)
+    window.cancelBalloon = function() {
+        if (isChargingBalloon) {
+            // Balloon doesn't activate - charge wasn't complete
+            // (Auto-activation happens in updateBalloonAbility when charge hits 100%)
+            
+            isChargingBalloon = false;
+            balloonCharge = 0;
+            currentAnimState = 'idle';
+            
+            if (balloonChargingMesh) {
+                balloonChargingMesh.dispose();
+                balloonChargingMesh = null;
+            }
+            
+            resetPlayerArms();
+        }
+    };
+    
+    // Activate balloon
+    window.activateBalloon = function() {
+        if (isBalloonActive) return;
+        
+        isBalloonActive = true;
+        isChargingBalloon = false;
+        balloonCharge = 0;
+        currentAnimState = 'idle';
+        
+        // Dispose charging mesh
+        if (balloonChargingMesh) {
+            balloonChargingMesh.dispose();
+            balloonChargingMesh = null;
+        }
+        
+        resetPlayerArms();
+        
+        // Create the balloon mesh
+        createBalloonVisual();
+        
+        // Emit to server for other players
+        socket.emit('balloonActivate', {
+            x: playerPhysicsBody.position.x,
+            y: playerPhysicsBody.position.y,
+            z: playerPhysicsBody.position.z
+        });
+        
+        console.log('Balloon activated! Will expire in 15 seconds.');
+        
+        // Set timer to deactivate balloon after 15 seconds
+        if (balloonTimer) {
+            clearTimeout(balloonTimer);
+        }
+        balloonTimer = setTimeout(() => {
+            window.deactivateBalloon();
+            balloonTimer = null;
+        }, BALLOON_DURATION);
+    };
+    
+    // Deactivate balloon
+    window.deactivateBalloon = function() {
+        if (!isBalloonActive) return;
+        
+        isBalloonActive = false;
+        
+        // Clear timer if manually deactivated
+        if (balloonTimer) {
+            clearTimeout(balloonTimer);
+            balloonTimer = null;
+        }
+        
+        // Dispose balloon meshes
+        if (balloonMesh) {
+            balloonMesh.dispose();
+            balloonMesh = null;
+        }
+        if (balloonStringMesh) {
+            balloonStringMesh.dispose();
+            balloonStringMesh = null;
+        }
+        
+        // Emit to server
+        socket.emit('balloonDeactivate');
+        
+        console.log('Balloon deactivated!');
+    };
+    
+    // Pop balloon with particle effect
+    window.popBalloon = function(popPosition) {
+        if (!isBalloonActive) return;
+        
+        // Store position before disposing balloon
+        const popPos = popPosition || (balloonMesh ? balloonMesh.position.clone() : playerPhysicsBody.position.clone().add(new BABYLON.Vector3(0, 3, 0)));
+        
+        // Deactivate the balloon (this disposes meshes)
+        isBalloonActive = false;
+        
+        // Clear timer
+        if (balloonTimer) {
+            clearTimeout(balloonTimer);
+            balloonTimer = null;
+        }
+        
+        // Dispose balloon meshes
+        if (balloonMesh) {
+            balloonMesh.dispose();
+            balloonMesh = null;
+        }
+        if (balloonStringMesh) {
+            balloonStringMesh.dispose();
+            balloonStringMesh = null;
+        }
+        
+        // Create pop particle effect
+        createBalloonPopEffect(popPos);
+        
+        // Emit to server (with pop flag so others see the effect too)
+        socket.emit('balloonPopped', {
+            x: popPos.x,
+            y: popPos.y,
+            z: popPos.z
+        });
+        
+        console.log('Balloon popped!');
+    };
+    
+    // Create balloon pop particle effect
+    function createBalloonPopEffect(position) {
+        // Create particle system with lots of particles
+        const particleSystem = new BABYLON.ParticleSystem("balloonPop", 2000, scene);
+
+        // Texture of each particle
+        particleSystem.particleTexture = new BABYLON.Texture("https://www.babylonjs-playground.com/textures/flare.png", scene);
+
+        // Where the particles come from
+        particleSystem.emitter = position;
+
+        // Colors of all particles (red/pink to match balloon)
+        particleSystem.color1 = new BABYLON.Color4(1.0, 0.3, 0.3, 1.0);
+        particleSystem.color2 = new BABYLON.Color4(1.0, 0.5, 0.5, 1.0);
+        particleSystem.colorDead = new BABYLON.Color4(0.5, 0, 0, 0.0);
+
+        // Size of each particle (random between...
+        particleSystem.minSize = 0.1;
+        particleSystem.maxSize = 0.5;
+
+        // Life time of each particle (random between...
+        particleSystem.minLifeTime = 0.3;
+        particleSystem.maxLifeTime = 1.5;
+
+        // Emission rate
+        particleSystem.emitRate = 1000;
+
+        // Sphere emitter - particles emit outward from sphere surface
+        particleSystem.createSphereEmitter(0.5);
+
+        // Speed
+        particleSystem.minEmitPower = 1;
+        particleSystem.maxEmitPower = 3;
+        particleSystem.updateSpeed = 0.005;
+
+        // Gravity (particles fall)
+        particleSystem.gravity = new BABYLON.Vector3(0, -3, 0);
+
+        // Start the particle system
+        particleSystem.start();
+
+        // Stop emitting after 0.1 seconds (burst effect) but let particles live
+        setTimeout(() => {
+            particleSystem.stop();
+        }, 100);
+
+        // Dispose after 2 seconds (particles have finished)
+        setTimeout(() => {
+            particleSystem.dispose();
+        }, 2000);
+    }
+    
+    // Expose for other players to see
+    window.createBalloonPopEffect = createBalloonPopEffect;
+    
+    // Create balloon visual above player's head
+    function createBalloonVisual() {
+        if (balloonMesh) {
+            balloonMesh.dispose();
+        }
+        if (balloonStringMesh) {
+            balloonStringMesh.dispose();
+        }
+        
+        // Create balloon (red oval shape)
+        balloonMesh = BABYLON.MeshBuilder.CreateSphere("balloon", {
+            diameterX: 0.8,
+            diameterY: 1.0,
+            diameterZ: 0.8,
+            segments: 16
+        }, scene);
+        const balloonMat = new BABYLON.StandardMaterial("balloonMat", scene);
+        balloonMat.diffuseColor = new BABYLON.Color3(1, 0.2, 0.2);
+        balloonMat.emissiveColor = new BABYLON.Color3(0.3, 0.05, 0.05);
+        balloonMat.specularColor = new BABYLON.Color3(0.8, 0.8, 0.8);
+        balloonMat.specularPower = 32;
+        balloonMesh.material = balloonMat;
+        balloonMesh.isPickable = false;
+        
+        // Create string (thin cylinder)
+        balloonStringMesh = BABYLON.MeshBuilder.CreateCylinder("balloonString", {
+            height: 1.0,
+            diameter: 0.02,
+            tessellation: 8
+        }, scene);
+        const stringMat = new BABYLON.StandardMaterial("balloonStringMat", scene);
+        stringMat.diffuseColor = new BABYLON.Color3(0.3, 0.3, 0.3);
+        balloonStringMesh.material = stringMat;
+        balloonStringMesh.isPickable = false;
+    }
+    
+    // Update balloon position and physics (called each frame in render loop)
+    window.updateBalloonAbility = function() {
+        if (!playerPhysicsBody) return;
+        
+        // Update charging visual position and size
+        if (isChargingBalloon && balloonChargingMesh) {
+            const chargePercent = balloonCharge / 100;
+            const size = 0.3 + chargePercent * 0.5;
+            balloonChargingMesh.scaling.setAll(size);
+            
+            // Position above player's head
+            balloonChargingMesh.position.x = playerPhysicsBody.position.x;
+            balloonChargingMesh.position.y = playerPhysicsBody.position.y + 2.5 + chargePercent * 0.5;
+            balloonChargingMesh.position.z = playerPhysicsBody.position.z;
+            
+            // Increase glow as charge increases
+            if (balloonChargingMesh.material) {
+                balloonChargingMesh.material.emissiveColor = new BABYLON.Color3(
+                    0.5 + chargePercent * 0.3,
+                    0.1 + chargePercent * 0.1,
+                    0.1 + chargePercent * 0.1
+                );
+            }
+            
+            // Update charge
+            balloonCharge += BALLOON_CHARGE_RATE;
+            if (balloonCharge > 100) balloonCharge = 100;
+            
+            // Animate arms up
+            if (player && player.leftArm && player.rightArm) {
+                player.leftArm.rotation.x = -1.5;
+                player.rightArm.rotation.x = -1.5;
+                player.leftArm.rotation.z = 0.4;
+                player.rightArm.rotation.z = -0.4;
+            }
+            
+            // Auto-activate balloon when fully charged (like other abilities)
+            if (balloonCharge >= 100) {
+                window.activateBalloon();
+            }
+        }
+        
+        // Update active balloon position and apply physics
+        if (isBalloonActive) {
+            if (balloonMesh && balloonStringMesh) {
+                // Balloon floats above player's head with gentle bobbing
+                const bobAmount = Math.sin(Date.now() * 0.003) * 0.1;
+                
+                balloonMesh.position.x = playerPhysicsBody.position.x;
+                balloonMesh.position.y = playerPhysicsBody.position.y + 3.0 + bobAmount;
+                balloonMesh.position.z = playerPhysicsBody.position.z;
+                
+                // String connects balloon to player
+                balloonStringMesh.position.x = playerPhysicsBody.position.x;
+                balloonStringMesh.position.y = playerPhysicsBody.position.y + 2.0 + bobAmount * 0.5;
+                balloonStringMesh.position.z = playerPhysicsBody.position.z;
+            }
+            
+            // Apply balloon physics effect
+            if (playerPhysicsBody.physicsImpostor && !isDead) {
+                const currentVelocity = playerPhysicsBody.physicsImpostor.getLinearVelocity();
+                const playerY = playerPhysicsBody.position.y;
+                const heightAboveGround = playerY - BALLOON_GROUND_LEVEL;
+                
+                // Calculate velocity adjustment
+                let vyAdjustment = 0;
+                
+                if (heightAboveGround > 0.5) {
+                    // Above ground: balloon provides lift against gravity
+                    // Decrease downward velocity, resist upward velocity less
+                    if (currentVelocity.y < 0) {
+                        // Falling - balloon slows descent
+                        vyAdjustment = -currentVelocity.y * BALLOON_VELOCITY_FACTOR;
+                    } else if (currentVelocity.y > 2) {
+                        // Rising too fast - balloon provides some drag
+                        vyAdjustment = -currentVelocity.y * BALLOON_VELOCITY_FACTOR * 0.3;
+                    }
+                } else if (heightAboveGround < 0) {
+                    // Below ground level (shouldn't happen often, but handle it)
+                    // Increase upward velocity
+                    vyAdjustment = Math.abs(heightAboveGround) * 0.5;
+                }
+                
+                // Apply gentle velocity adjustment
+                if (Math.abs(vyAdjustment) > 0.01) {
+                    const newVy = currentVelocity.y + vyAdjustment;
+                    playerPhysicsBody.physicsImpostor.setLinearVelocity(
+                        new BABYLON.Vector3(currentVelocity.x, newVy, currentVelocity.z)
+                    );
+                }
+            }
+            
+            // Check for ball collisions with balloon - if a ball hits the balloon, it pops
+            if (balloonMesh && !balloonMesh.isDisposed()) {
+                const balloonPos = balloonMesh.position;
+                const balloonRadius = 0.5; // Approximate balloon radius
+                
+                // Check against all balls in the scene
+                const balls = scene.meshes.filter(mesh => 
+                    mesh.name && (mesh.name.startsWith("ball") || mesh.name.startsWith("projectile")) &&
+                    mesh.physicsImpostor && !mesh.isDisposed()
+                );
+                
+                for (const ball of balls) {
+                    const dist = BABYLON.Vector3.Distance(ball.position, balloonPos);
+                    if (dist < balloonRadius + 0.3) { // 0.3 is approximate ball radius
+                        // Balloon was hit! Pop it
+                        console.log('Balloon hit by ball!');
+                        window.popBalloon(balloonPos.clone());
+                        break;
+                    }
+                }
+            }
+        }
+    };
+    
+    // Expose balloon charge for network sync
+    window.getBalloonChargeLevel = function() {
+        return isChargingBalloon ? balloonCharge : 0;
+    };
+    
+    window.isBalloonActive = function() {
+        return isBalloonActive;
+    };
+    
     // Launch drone after charging
     window.launchDrone = function() {
         isChargingDrone = false;
@@ -5806,7 +6215,7 @@ function addOtherPlayer(playerInfo) {
 }
 
 // Apply animation to other player's character
-function applyOtherPlayerAnimation(playerData, animState, chargeLevel, grenadeChargeLevel, droneChargeLevel, clothChargeLevel, grappleChargeLevel, waterBalloonChargeLevel) {
+function applyOtherPlayerAnimation(playerData, animState, chargeLevel, grenadeChargeLevel, droneChargeLevel, clothChargeLevel, grappleChargeLevel, waterBalloonChargeLevel, balloonChargeLevel) {
     const mesh = playerData.mesh;
     if (!mesh || !mesh.leftArm || !mesh.rightArm) return;
     
@@ -5815,6 +6224,7 @@ function applyOtherPlayerAnimation(playerData, animState, chargeLevel, grenadeCh
     clothChargeLevel = clothChargeLevel || 0;
     grappleChargeLevel = grappleChargeLevel || 0;
     waterBalloonChargeLevel = waterBalloonChargeLevel || 0;
+    balloonChargeLevel = balloonChargeLevel || 0;
     
     // Handle ultimate charging ball
     if (animState === 'charging' && chargeLevel > 0) {
@@ -6105,8 +6515,53 @@ function applyOtherPlayerAnimation(playerData, animState, chargeLevel, grenadeCh
         }
     }
     
+    // Handle Beavis balloon charging (red balloon above head)
+    if (animState === 'charging' && balloonChargeLevel > 0) {
+        // Create or update balloon charging visual
+        if (!playerData.balloonChargingMesh) {
+            playerData.balloonChargingMesh = BABYLON.MeshBuilder.CreateSphere("otherBalloonCharging", {
+                diameter: 0.3,
+                segments: 12
+            }, scene);
+            const chargeMat = new BABYLON.StandardMaterial("otherBalloonChargeMat", scene);
+            chargeMat.diffuseColor = new BABYLON.Color3(1, 0.2, 0.2);
+            chargeMat.emissiveColor = new BABYLON.Color3(0.5, 0.1, 0.1);
+            chargeMat.alpha = 0.7;
+            playerData.balloonChargingMesh.material = chargeMat;
+        }
+        
+        // Size and glow based on charge
+        const chargePercent = balloonChargeLevel / 100;
+        const size = 0.3 + chargePercent * 0.5;
+        playerData.balloonChargingMesh.scaling.setAll(size);
+        
+        // Position above character's head
+        playerData.balloonChargingMesh.position.x = mesh.position.x;
+        playerData.balloonChargingMesh.position.y = mesh.position.y + 3.0 + chargePercent * 0.5;
+        playerData.balloonChargingMesh.position.z = mesh.position.z;
+        
+        // Increase glow as charge increases
+        playerData.balloonChargingMesh.material.emissiveColor = new BABYLON.Color3(
+            0.5 + chargePercent * 0.3,
+            0.1 + chargePercent * 0.1,
+            0.1 + chargePercent * 0.1
+        );
+        
+        // Arms up
+        mesh.leftArm.rotation.x = -1.5;
+        mesh.rightArm.rotation.x = -1.5;
+        mesh.leftArm.rotation.z = 0.4;
+        mesh.rightArm.rotation.z = -0.4;
+    } else {
+        // Dispose balloon charging mesh if not charging
+        if (playerData.balloonChargingMesh) {
+            playerData.balloonChargingMesh.dispose();
+            playerData.balloonChargingMesh = null;
+        }
+    }
+    
     // Handle other animations when not charging anything
-    if (!(animState === 'charging' && (chargeLevel > 0 || grenadeChargeLevel > 0 || droneChargeLevel > 0 || clothChargeLevel > 0 || grappleChargeLevel > 0 || waterBalloonChargeLevel > 0))) {
+    if (!(animState === 'charging' && (chargeLevel > 0 || grenadeChargeLevel > 0 || droneChargeLevel > 0 || clothChargeLevel > 0 || grappleChargeLevel > 0 || waterBalloonChargeLevel > 0 || balloonChargeLevel > 0))) {
         if (animState === 'shooting') {
             // One arm punch
             mesh.rightArm.rotation.x = -1.2;
@@ -6250,7 +6705,7 @@ socket.on('playerMoved', (playerInfo) => {
         p.targetZ = p.serverZ;
         
         // Apply animation state immediately
-        applyOtherPlayerAnimation(p, playerInfo.animState || 'idle', playerInfo.chargeLevel || 0, playerInfo.grenadeChargeLevel || 0, playerInfo.droneChargeLevel || 0, playerInfo.clothChargeLevel || 0, playerInfo.grappleChargeLevel || 0, playerInfo.waterBalloonChargeLevel || 0);
+        applyOtherPlayerAnimation(p, playerInfo.animState || 'idle', playerInfo.chargeLevel || 0, playerInfo.grenadeChargeLevel || 0, playerInfo.droneChargeLevel || 0, playerInfo.clothChargeLevel || 0, playerInfo.grappleChargeLevel || 0, playerInfo.waterBalloonChargeLevel || 0, playerInfo.balloonChargeLevel || 0);
         
         // Handle other player's drone
         if (playerInfo.isDroneMode) {
@@ -7500,6 +7955,118 @@ socket.on('waterBalloonPoolCreated', (poolData) => {
     }
 });
 
+// Receive Beavis balloon activated by another player
+socket.on('playerBalloonActivate', (data) => {
+    const playerId = data.playerId;
+    if (otherPlayers[playerId]) {
+        const p = otherPlayers[playerId];
+        
+        // Create balloon mesh above player
+        if (p.balloonMesh) {
+            p.balloonMesh.dispose();
+        }
+        if (p.balloonStringMesh) {
+            p.balloonStringMesh.dispose();
+        }
+        
+        // Create balloon (red oval shape)
+        p.balloonMesh = BABYLON.MeshBuilder.CreateSphere("otherBalloon_" + playerId, {
+            diameterX: 0.8,
+            diameterY: 1.0,
+            diameterZ: 0.8,
+            segments: 16
+        }, scene);
+        const balloonMat = new BABYLON.StandardMaterial("otherBalloonMat_" + playerId, scene);
+        balloonMat.diffuseColor = new BABYLON.Color3(1, 0.2, 0.2);
+        balloonMat.emissiveColor = new BABYLON.Color3(0.3, 0.05, 0.05);
+        balloonMat.specularColor = new BABYLON.Color3(0.8, 0.8, 0.8);
+        balloonMat.specularPower = 32;
+        p.balloonMesh.material = balloonMat;
+        p.balloonMesh.isPickable = false;
+        
+        // Create string (thin cylinder)
+        p.balloonStringMesh = BABYLON.MeshBuilder.CreateCylinder("otherBalloonString_" + playerId, {
+            height: 1.0,
+            diameter: 0.02,
+            tessellation: 8
+        }, scene);
+        const stringMat = new BABYLON.StandardMaterial("otherBalloonStringMat_" + playerId, scene);
+        stringMat.diffuseColor = new BABYLON.Color3(0.3, 0.3, 0.3);
+        p.balloonStringMesh.material = stringMat;
+        p.balloonStringMesh.isPickable = false;
+        
+        p.isBalloonActive = true;
+        
+        // Update balloon position each frame (uses the existing render loop to follow mesh)
+        p.balloonUpdateObserver = scene.onBeforeRenderObservable.add(() => {
+            if (p.balloonMesh && p.mesh && !p.balloonMesh.isDisposed()) {
+                const bobAmount = Math.sin(Date.now() * 0.003) * 0.1;
+                p.balloonMesh.position.x = p.mesh.position.x;
+                p.balloonMesh.position.y = p.mesh.position.y + 3.5 + bobAmount;
+                p.balloonMesh.position.z = p.mesh.position.z;
+                
+                if (p.balloonStringMesh && !p.balloonStringMesh.isDisposed()) {
+                    p.balloonStringMesh.position.x = p.mesh.position.x;
+                    p.balloonStringMesh.position.y = p.mesh.position.y + 2.5 + bobAmount * 0.5;
+                    p.balloonStringMesh.position.z = p.mesh.position.z;
+                }
+            }
+        });
+    }
+});
+
+// Receive Beavis balloon deactivated by another player
+socket.on('playerBalloonDeactivate', (data) => {
+    const playerId = data.playerId;
+    if (otherPlayers[playerId]) {
+        const p = otherPlayers[playerId];
+        
+        if (p.balloonMesh) {
+            p.balloonMesh.dispose();
+            p.balloonMesh = null;
+        }
+        if (p.balloonStringMesh) {
+            p.balloonStringMesh.dispose();
+            p.balloonStringMesh = null;
+        }
+        if (p.balloonUpdateObserver) {
+            scene.onBeforeRenderObservable.remove(p.balloonUpdateObserver);
+            p.balloonUpdateObserver = null;
+        }
+        p.isBalloonActive = false;
+    }
+});
+
+// Receive Beavis balloon popped by another player (with particle effect)
+socket.on('playerBalloonPopped', (data) => {
+    const playerId = data.playerId;
+    
+    // Show pop effect at the given position
+    const popPos = new BABYLON.Vector3(data.x, data.y, data.z);
+    if (window.createBalloonPopEffect) {
+        window.createBalloonPopEffect(popPos);
+    }
+    
+    // Remove their balloon mesh
+    if (otherPlayers[playerId]) {
+        const p = otherPlayers[playerId];
+        
+        if (p.balloonMesh) {
+            p.balloonMesh.dispose();
+            p.balloonMesh = null;
+        }
+        if (p.balloonStringMesh) {
+            p.balloonStringMesh.dispose();
+            p.balloonStringMesh = null;
+        }
+        if (p.balloonUpdateObserver) {
+            scene.onBeforeRenderObservable.remove(p.balloonUpdateObserver);
+            p.balloonUpdateObserver = null;
+        }
+        p.isBalloonActive = false;
+    }
+});
+
 // Helper function to spawn block
 function spawnBlock(data) {
     var mesh;
@@ -7946,11 +8513,19 @@ document.addEventListener('keydown', function(event) {
         window.startChargingCloth();
     }
     
-    // Patrick Grapple Hook ability OR Skibidi Toilet Water Balloon - hold G to charge
+    // Patrick Grapple Hook OR Skibidi Toilet Water Balloon OR Beavis Balloon - hold G to charge
     // (skin-specific, only one will activate based on selected skin)
     if (event.code === "KeyG") {
         window.startChargingGrapple();
         window.startChargingWaterBalloon();
+        window.startChargingBalloon();
+    }
+    
+    // Beavis Balloon pop - Shift key to manually pop balloon (only works with Beavis skin when balloon is active)
+    if (event.code === "ShiftLeft" || event.code === "ShiftRight") {
+        if (selectedSkin === 'beavis' && window.isBalloonActive && window.isBalloonActive()) {
+            window.popBalloon();
+        }
     }
 });
 
@@ -7985,10 +8560,11 @@ document.addEventListener('keyup', function(event) {
         window.cancelCloth();
     }
     
-    // Cancel grapple OR water balloon if G is released before fully charged
+    // Cancel grapple OR water balloon OR balloon if G is released before fully charged
     if (event.code === "KeyG") {
         window.cancelGrapple();
         window.cancelWaterBalloon();
+        window.cancelBalloon();
     }
 });
 
