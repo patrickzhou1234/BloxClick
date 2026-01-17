@@ -1,10 +1,10 @@
-# VoidKick
+# BloxClick
 
 This project is based on [Moist3dEditor](https://github.com/patrickzhou1234/Moist3dEditor).
 
 The original project was created completely without vibecoding (AI assistance) in 2022, back when AI couldn't even do this stuff!
 
-I vibecoded this version to transform it into a multiplayer game and added more features to create **VoidKick**.
+I vibecoded this version to transform it into a multiplayer game and added more features to create **BloxClick**.
 
 ## Directions
 
